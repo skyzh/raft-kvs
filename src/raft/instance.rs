@@ -288,7 +288,6 @@ impl Raft {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,8 +365,8 @@ mod tests {
                 (
                     log_to,
                     RaftRPC::RequestVoteReply(RequestVoteReply {
-                                                  vote_granted: true, ..
-                                              }),
+                        vote_granted: true, ..
+                    }),
                 ) => {
                     let log_to = *log_to;
                     match m.get_mut(&log_to) {
@@ -433,7 +432,7 @@ mod tests {
                     last_log_term: 0,
                     last_log_index: 0,
                 }
-                    .into(),
+                .into(),
             )),
             100,
         );
@@ -446,7 +445,7 @@ mod tests {
                     last_log_term: 0,
                     last_log_index: 0,
                 }
-                    .into(),
+                .into(),
             )),
             101,
         );
@@ -459,7 +458,7 @@ mod tests {
                     last_log_term: 0,
                     last_log_index: 0,
                 }
-                    .into(),
+                .into(),
             )),
             105,
         );
@@ -480,7 +479,7 @@ mod tests {
                     last_log_term: 0,
                     last_log_index: 0,
                 }
-                    .into(),
+                .into(),
             )),
             100,
         );
@@ -501,7 +500,7 @@ mod tests {
                     last_log_term: 0,
                     last_log_index: 0,
                 }
-                    .into(),
+                .into(),
             )),
             100,
         );
@@ -538,7 +537,7 @@ mod tests {
                         term: 1,
                         vote_granted: true,
                     }
-                        .into(),
+                    .into(),
                 )),
                 100 + i,
             );
@@ -561,7 +560,7 @@ mod tests {
                         term: 1,
                         vote_granted: true,
                     }
-                        .into(),
+                    .into(),
                 )),
                 100 + i,
             );
@@ -586,7 +585,7 @@ mod tests {
                     entries: vec![],
                     leader_commit: 200,
                 }
-                    .into(),
+                .into(),
             )),
             1005,
         );
@@ -609,7 +608,7 @@ mod tests {
                     entries: vec![],
                     leader_commit: 200,
                 }
-                    .into(),
+                .into(),
             )),
             1005,
         );
@@ -632,7 +631,7 @@ mod tests {
                     entries: vec![],
                     leader_commit: 200,
                 }
-                    .into(),
+                .into(),
             )),
             1005,
         );
