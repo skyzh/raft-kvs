@@ -18,43 +18,43 @@ pub enum Role {
 pub struct Raft {
     /// latest term server has seen (initialized to 0 on first boot)
     /// This is a persistent state.
-    current_term: i64,
+    pub current_term: i64,
     /// candidate_id that received vote in current term
     /// This is a persistent state.
-    voted_for: Option<u64>,
+    pub voted_for: Option<u64>,
     /// log entries; each entry contains command for state machine, and term when
     /// entry was received by leader (first index is 1)
     /// This is a persistent state.
-    log: Vec<(i64, Log)>,
+    pub log: Vec<(i64, Log)>,
 
     /// index of highest log entry known to be committed (initialized to 0)
     /// This is a volatile state.
-    commit_index: i64,
+    pub commit_index: i64,
     /// index of highest log entry applied to state machine (initialized to 0)
     /// This is a volatile state.
-    last_applied: i64,
+    pub last_applied: i64,
 
     /// for each server, index of the next log entry to send to that serve
     /// (initialized to leader last log index + 1)
     /// This is a volatile state for leaders.
-    next_index: HashMap<u64, i64>,
+    pub next_index: HashMap<u64, i64>,
     /// for each server, index of highest log entry known to be replicated on server
     ///(initialized to 0)
     /// This is a volatile state for leaders.
-    match_index: HashMap<u64, i64>,
+    pub match_index: HashMap<u64, i64>,
 
     /// RPC service for Raft
     /// This is raft-kvs internal state.
-    rpc: MockRPCService,
+    pub rpc: MockRPCService,
     /// role of Raft instance
     /// This is raft-kvs internal state.
-    role: Role,
+    pub role: Role,
     /// known peers, must include `self_id`
     /// This is raft-kvs internal state.
-    known_peers: Vec<u64>,
+    pub known_peers: Vec<u64>,
     /// id of myself
     /// This is raft-kvs internal state.
-    id: u64,
+    pub id: u64,
 
     /// follower will start election after this time
     /// This is raft-kvs internal state. Should be reset when become follower.
@@ -285,364 +285,5 @@ impl Raft {
     /// generate random election start
     fn tick_election_start_at() -> u64 {
         rand::thread_rng().gen_range(200, 300)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::raft::rpc::{AppendEntries, RaftRPC, RequestVoteReply};
-
-    #[test]
-    fn test_new() {
-        let r = test_raft_instance();
-    }
-
-    fn inspect_request_vote(rpc: &MockRPCService) -> HashMap<u64, u64> {
-        let mut m: HashMap<u64, u64> = HashMap::new();
-        for log in rpc.rpc_log.iter() {
-            match log {
-                (log_to, RaftRPC::RequestVote(_)) => {
-                    let log_to = *log_to;
-                    match m.get_mut(&log_to) {
-                        Some(x) => {
-                            *x += 1;
-                        }
-                        None => {
-                            m.insert(log_to, 1);
-                        }
-                    }
-                }
-                _ => {}
-            };
-        }
-        return m;
-    }
-
-    fn inspect_append_entries(rpc: &MockRPCService) -> HashMap<u64, u64> {
-        let mut m: HashMap<u64, u64> = HashMap::new();
-        for log in rpc.rpc_log.iter() {
-            match log {
-                (log_to, RaftRPC::AppendEntries(_)) => {
-                    let log_to = *log_to;
-                    match m.get_mut(&log_to) {
-                        Some(x) => {
-                            *x += 1;
-                        }
-                        None => {
-                            m.insert(log_to, 1);
-                        }
-                    }
-                }
-                _ => {}
-            };
-        }
-        return m;
-    }
-
-    fn inspect_request_vote_to(rpc: &MockRPCService, to: u64) -> u64 {
-        match inspect_request_vote(rpc).get(&to) {
-            None => 0,
-            Some(x) => *x,
-        }
-    }
-
-    fn inspect_has_request_vote_to(rpc: &MockRPCService, to: u64) -> bool {
-        match inspect_request_vote(rpc).get(&to) {
-            None => false,
-            Some(_) => true,
-        }
-    }
-
-    fn test_raft_instance() -> Raft {
-        Raft::new(vec![1, 2, 3, 4, 5])
-    }
-
-    fn inspect_request_vote_reply(rpc: &MockRPCService) -> HashMap<u64, u64> {
-        let mut m: HashMap<u64, u64> = HashMap::new();
-        for log in rpc.rpc_log.iter() {
-            match log {
-                (
-                    log_to,
-                    RaftRPC::RequestVoteReply(RequestVoteReply {
-                        vote_granted: true, ..
-                    }),
-                ) => {
-                    let log_to = *log_to;
-                    match m.get_mut(&log_to) {
-                        Some(x) => {
-                            *x += 1;
-                        }
-                        None => {
-                            m.insert(log_to, 1);
-                        }
-                    }
-                }
-                _ => {}
-            };
-        }
-        return m;
-    }
-
-    fn inspect_request_vote_reply_to(rpc: &MockRPCService, to: u64) -> u64 {
-        match inspect_request_vote_reply(rpc).get(&to) {
-            None => 0,
-            Some(x) => *x,
-        }
-    }
-
-    fn inspect_has_request_vote_reply_to(rpc: &MockRPCService, to: u64) -> bool {
-        match inspect_request_vote_reply(rpc).get(&to) {
-            None => false,
-            Some(_) => true,
-        }
-    }
-
-    #[test]
-    fn test_follower_become_candidate() {
-        let mut r = test_raft_instance();
-        r.tick(1000);
-        // should change role and increase term number
-        assert_eq!(r.role, Role::Candidate);
-        assert_eq!(r.current_term, 1);
-        // should begin election
-        assert!(inspect_has_request_vote_to(&r.rpc, 2));
-        assert!(inspect_has_request_vote_to(&r.rpc, 3));
-        assert!(inspect_has_request_vote_to(&r.rpc, 4));
-        assert!(inspect_has_request_vote_to(&r.rpc, 5));
-        assert!(!inspect_has_request_vote_to(&r.rpc, 1));
-    }
-
-    #[test]
-    fn test_begin_as_follower() {
-        let r = test_raft_instance();
-        assert_eq!(r.role, Role::Follower);
-    }
-
-    #[test]
-    fn test_follower_respond_to_one_vote() {
-        let mut r = test_raft_instance();
-        r.current_term = 1;
-        r.on_event(
-            RaftEvent::RPC((
-                2,
-                RequestVote {
-                    term: 1,
-                    candidate_id: 2,
-                    last_log_term: 0,
-                    last_log_index: 0,
-                }
-                .into(),
-            )),
-            100,
-        );
-        r.on_event(
-            RaftEvent::RPC((
-                3,
-                RequestVote {
-                    term: 1,
-                    candidate_id: 3,
-                    last_log_term: 0,
-                    last_log_index: 0,
-                }
-                .into(),
-            )),
-            101,
-        );
-        r.on_event(
-            RaftEvent::RPC((
-                2,
-                RequestVote {
-                    term: 1,
-                    candidate_id: 2,
-                    last_log_term: 0,
-                    last_log_index: 0,
-                }
-                .into(),
-            )),
-            105,
-        );
-        assert_eq!(inspect_request_vote_reply_to(&r.rpc, 2), 2);
-        assert!(!inspect_has_request_vote_reply_to(&r.rpc, 3));
-    }
-
-    #[test]
-    fn test_follower_respond_to_lower_term_vote() {
-        let mut r = test_raft_instance();
-        r.current_term = 233;
-        r.on_event(
-            RaftEvent::RPC((
-                2,
-                RequestVote {
-                    term: 1,
-                    candidate_id: 2,
-                    last_log_term: 0,
-                    last_log_index: 0,
-                }
-                .into(),
-            )),
-            100,
-        );
-        assert!(!inspect_has_request_vote_reply_to(&r.rpc, 2));
-    }
-
-    #[test]
-    fn test_follower_respond_to_vote_stale_log() {
-        let mut r = test_raft_instance();
-        r.current_term = 1;
-        r.log.push((1, Log::Get("233".into())));
-        r.on_event(
-            RaftEvent::RPC((
-                2,
-                RequestVote {
-                    term: 1,
-                    candidate_id: 2,
-                    last_log_term: 0,
-                    last_log_index: 0,
-                }
-                .into(),
-            )),
-            100,
-        );
-        assert!(!inspect_has_request_vote_reply_to(&r.rpc, 2));
-    }
-
-    #[test]
-    fn test_candidate_restart_election() {
-        let mut r = test_raft_instance();
-        r.tick(1000);
-        // should have started election
-        assert_eq!(r.role, Role::Candidate);
-        r.tick(2000);
-        // should have started another election
-        assert_eq!(r.role, Role::Candidate);
-        assert_eq!(inspect_request_vote_to(&r.rpc, 2), 2);
-        assert_eq!(inspect_request_vote_to(&r.rpc, 3), 2);
-        assert_eq!(inspect_request_vote_to(&r.rpc, 4), 2);
-        assert_eq!(inspect_request_vote_to(&r.rpc, 5), 2);
-    }
-
-    #[test]
-    fn test_candidate_win_election() {
-        let mut r = test_raft_instance();
-        r.tick(1000);
-        // should have started election
-        assert_eq!(r.role, Role::Candidate);
-        // send mock RPC to raft instance
-        for i in 2..=3 {
-            r.on_event(
-                RaftEvent::RPC((
-                    i as u64,
-                    RequestVoteReply {
-                        term: 1,
-                        vote_granted: true,
-                    }
-                    .into(),
-                )),
-                100 + i,
-            );
-        }
-        assert_eq!(r.role, Role::Leader);
-    }
-
-    #[test]
-    fn test_candidate_election_not_enough_vote() {
-        let mut r = test_raft_instance();
-        r.tick(1000);
-        // should have started election
-        assert_eq!(r.role, Role::Candidate);
-        // send mock RPC to raft instance
-        for i in 1..=5 {
-            r.on_event(
-                RaftEvent::RPC((
-                    2,
-                    RequestVoteReply {
-                        term: 1,
-                        vote_granted: true,
-                    }
-                    .into(),
-                )),
-                100 + i,
-            );
-        }
-        r.tick(1100);
-        assert_eq!(r.role, Role::Candidate);
-    }
-
-    #[test]
-    fn test_candidate_become_follower_append() {
-        let mut r = test_raft_instance();
-        r.tick(1000);
-        assert_eq!(r.role, Role::Candidate);
-        r.on_event(
-            RaftEvent::RPC((
-                2,
-                AppendEntries {
-                    term: r.current_term,
-                    leader_id: 2,
-                    prev_log_index: 233,
-                    prev_log_term: 1,
-                    entries: vec![],
-                    leader_commit: 200,
-                }
-                .into(),
-            )),
-            1005,
-        );
-        assert_eq!(r.role, Role::Follower);
-    }
-
-    #[test]
-    fn test_candidate_become_follower_term() {
-        let mut r = test_raft_instance();
-        r.tick(1000);
-        assert_eq!(r.role, Role::Candidate);
-        r.on_event(
-            RaftEvent::RPC((
-                2,
-                AppendEntries {
-                    term: r.current_term + 3,
-                    leader_id: 2,
-                    prev_log_index: 233,
-                    prev_log_term: 1,
-                    entries: vec![],
-                    leader_commit: 200,
-                }
-                .into(),
-            )),
-            1005,
-        );
-        assert_eq!(r.role, Role::Follower);
-    }
-
-    #[test]
-    fn test_leader_become_follower_term() {
-        let mut r = test_raft_instance();
-        r.tick(1000);
-        r.role = Role::Leader;
-        r.on_event(
-            RaftEvent::RPC((
-                2,
-                AppendEntries {
-                    term: r.current_term + 3,
-                    leader_id: 2,
-                    prev_log_index: 233,
-                    prev_log_term: 1,
-                    entries: vec![],
-                    leader_commit: 200,
-                }
-                .into(),
-            )),
-            1005,
-        );
-        assert_eq!(r.role, Role::Follower);
-    }
-
-    #[test]
-    fn test_leader_heartbeat() {
-        let mut r = test_raft_instance();
-        r.begin_election(100);
-        r.become_leader();
-        assert_eq!(inspect_append_entries(&r.rpc).len(), 4);
     }
 }

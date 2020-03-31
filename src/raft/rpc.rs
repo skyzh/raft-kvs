@@ -1,6 +1,5 @@
 //! Define RPC calls and RPC service for Raft
 
-use crate::raft::instance::Raft;
 use crate::raft::log::Log;
 
 /// AppendEntries RPC
