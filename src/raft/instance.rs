@@ -2,7 +2,7 @@
 
 use crate::raft::event::RaftEvent;
 use crate::raft::log::Log;
-use crate::raft::rpc::{MockRPCService, RaftRPC, RequestVote};
+use crate::raft::rpc::{MockRPCService, RaftRPC, RequestVote, RequestVoteReply};
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -96,7 +96,7 @@ impl Raft {
         match self.role {
             Role::Follower => {
                 if current_tick > self.election_start_at {
-                    self.become_follower(current_tick);
+                    self.become_candidate(current_tick);
                 }
             }
             Role::Candidate => {
@@ -104,12 +104,34 @@ impl Raft {
                     self.begin_election(current_tick);
                 }
             }
-            Role::Leader => {}
+            Role::Leader => {
+                self.heartbeats();
+            }
         }
     }
 
+    /// send heartbeats to followers
+    fn heartbeats(&mut self) {
+        for peer in self.known_peers.clone().iter() {
+            let peer = *peer;
+            if peer != self.id {
+                self.sync_log_with(peer);
+            }
+        }
+    }
+
+    /// sync log to peer
+    fn sync_log_with(&mut self, peer: u64) {}
+
     /// become a follower
     fn become_follower(&mut self, current_tick: u64) {
+        self.role = Role::Follower;
+        self.election_start_at = current_tick + Self::tick_election_start_at();
+    }
+
+
+    /// become a candidate
+    fn become_candidate(&mut self, current_tick: u64) {
         self.current_term += 1;
         self.role = Role::Candidate;
         self.begin_election(current_tick);
@@ -162,18 +184,60 @@ impl Raft {
     /// process Raft event
     pub fn on_event(&mut self, event: RaftEvent, current_tick: u64) {
         match event {
-            RaftEvent::RPC((from, event)) => match event {
-                RaftRPC::RequestVote(request) => {}
-                RaftRPC::RequestVoteReply(reply) => {
-                    if reply.vote_granted {
-                        self.vote_from.insert(from, ());
-                        if self.vote_from.len() * 2 >= self.known_peers.len() {
-                            self.become_leader();
+            RaftEvent::RPC((from, event)) => {
+                if event.term() > self.current_term {
+                    self.become_follower(current_tick);
+                }
+                match self.role {
+                    Role::Follower => {
+                        match event {
+                            RaftRPC::RequestVote(request) => {
+                                if request.term < self.current_term {
+                                    self.rpc.send(from, RequestVoteReply {
+                                        term: self.current_term,
+                                        vote_granted: false,
+                                    }.into());
+                                } else {
+                                    let mut vote_granted = match self.voted_for {
+                                        Some(candidate_id) => candidate_id == request.candidate_id,
+                                        None => true
+                                    };
+                                    // TODO: how to check up-to-date?
+                                    if request.last_log_index < self.last_log_index() {
+                                        vote_granted = false;
+                                    }
+                                    if vote_granted { self.voted_for = Some(request.candidate_id); }
+                                    self.rpc.send(from, RequestVoteReply {
+                                        term: self.current_term,
+                                        vote_granted,
+                                    }.into());
+                                }
+                            }
+                            _ => {}
                         }
                     }
+                    Role::Candidate => {
+                        match event {
+                            RaftRPC::RequestVoteReply(reply) => {
+                                if reply.vote_granted {
+                                    self.vote_from.insert(from, ());
+                                    if self.vote_from.len() * 2 >= self.known_peers.len() {
+                                        self.become_leader();
+                                    }
+                                }
+                            }
+                            RaftRPC::AppendEntries(request) => {
+                                if request.term == self.current_term {
+                                    self.become_follower(current_tick);
+                                    // TODO: reply to append entries as candidate
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Role::Leader => {}
                 }
-                _ => unimplemented!(),
-            },
+            }
             _ => unimplemented!(),
         }
     }
@@ -182,12 +246,17 @@ impl Raft {
     fn tick_election_fail_at() -> u64 {
         rand::thread_rng().gen_range(200, 300)
     }
+
+    /// generate random election start
+    fn tick_election_start_at() -> u64 {
+        rand::thread_rng().gen_range(200, 300)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raft::rpc::{RaftRPC, RequestVoteReply};
+    use crate::raft::rpc::{RaftRPC, RequestVoteReply, AppendEntries};
 
     #[test]
     fn test_new() {
@@ -233,8 +302,43 @@ mod tests {
         Raft::new(vec![1, 2, 3, 4, 5])
     }
 
+    fn inspect_request_vote_reply(rpc: &MockRPCService) -> HashMap<u64, u64> {
+        let mut m: HashMap<u64, u64> = HashMap::new();
+        for log in rpc.rpc_log.iter() {
+            match log {
+                (log_to, RaftRPC::RequestVoteReply(RequestVoteReply { vote_granted: true, .. })) => {
+                    let log_to = *log_to;
+                    match m.get_mut(&log_to) {
+                        Some(x) => {
+                            *x += 1;
+                        }
+                        None => {
+                            m.insert(log_to, 1);
+                        }
+                    }
+                }
+                _ => {}
+            };
+        }
+        return m;
+    }
+
+    fn inspect_request_vote_reply_to(rpc: &MockRPCService, to: u64) -> u64 {
+        match inspect_request_vote_reply(rpc).get(&to) {
+            None => 0,
+            Some(x) => *x,
+        }
+    }
+
+    fn inspect_has_request_vote_reply_to(rpc: &MockRPCService, to: u64) -> bool {
+        match inspect_request_vote_reply(rpc).get(&to) {
+            None => false,
+            Some(_) => true
+        }
+    }
+
     #[test]
-    fn test_become_candidate() {
+    fn test_follower_become_candidate() {
         let mut r = test_raft_instance();
         r.tick(1000);
         // should change role and increase term number
@@ -249,7 +353,101 @@ mod tests {
     }
 
     #[test]
-    fn test_restart_election() {
+    fn test_begin_as_follower() {
+        let r = test_raft_instance();
+        assert_eq!(r.role, Role::Follower);
+    }
+
+    #[test]
+    fn test_follower_respond_to_one_vote() {
+        let mut r = test_raft_instance();
+        r.current_term = 1;
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                RequestVote {
+                    term: 1,
+                    candidate_id: 2,
+                    last_log_term: 0,
+                    last_log_index: 0,
+                }
+                    .into(),
+            )),
+            100,
+        );
+        r.on_event(
+            RaftEvent::RPC((
+                3,
+                RequestVote {
+                    term: 1,
+                    candidate_id: 3,
+                    last_log_term: 0,
+                    last_log_index: 0,
+                }
+                    .into(),
+            )),
+            101,
+        );
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                RequestVote {
+                    term: 1,
+                    candidate_id: 2,
+                    last_log_term: 0,
+                    last_log_index: 0,
+                }
+                    .into(),
+            )),
+            105,
+        );
+        assert_eq!(inspect_request_vote_reply_to(&r.rpc, 2), 2);
+        assert!(!inspect_has_request_vote_reply_to(&r.rpc, 3));
+    }
+
+    #[test]
+    fn test_follower_respond_to_lower_term_vote() {
+        let mut r = test_raft_instance();
+        r.current_term = 233;
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                RequestVote {
+                    term: 1,
+                    candidate_id: 2,
+                    last_log_term: 0,
+                    last_log_index: 0,
+                }
+                    .into(),
+            )),
+            100,
+        );
+        assert!(!inspect_has_request_vote_reply_to(&r.rpc, 2));
+    }
+
+    #[test]
+    fn test_follower_respond_to_vote_stale_log() {
+        let mut r = test_raft_instance();
+        r.current_term = 1;
+        r.log.push((1, Log::Get("233".into())));
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                RequestVote {
+                    term: 1,
+                    candidate_id: 2,
+                    last_log_term: 0,
+                    last_log_index: 0,
+                }
+                    .into(),
+            )),
+            100,
+        );
+        assert!(!inspect_has_request_vote_reply_to(&r.rpc, 2));
+    }
+
+    #[test]
+    fn test_candidate_restart_election() {
         let mut r = test_raft_instance();
         r.tick(1000);
         // should have started election
@@ -264,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn test_win_election() {
+    fn test_candidate_win_election() {
         let mut r = test_raft_instance();
         r.tick(1000);
         // should have started election
@@ -287,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn test_election_not_enough_vote() {
+    fn test_candidate_election_not_enough_vote() {
         let mut r = test_raft_instance();
         r.tick(1000);
         // should have started election
@@ -306,6 +504,55 @@ mod tests {
                 100 + i,
             );
         }
+        r.tick(1100);
         assert_eq!(r.role, Role::Candidate);
+    }
+
+    #[test]
+    fn test_candidate_become_follower_append() {
+        let mut r = test_raft_instance();
+        r.tick(1000);
+        assert_eq!(r.role, Role::Candidate);
+        r.on_event(RaftEvent::RPC((2, AppendEntries {
+            term: r.current_term,
+            leader_id: 2,
+            prev_log_index: 233,
+            prev_log_term: 1,
+            entries: vec![],
+            leader_commit: 200
+        }.into())), 1005);
+        assert_eq!(r.role, Role::Follower);
+    }
+
+    #[test]
+    fn test_candidate_become_follower_term() {
+        let mut r = test_raft_instance();
+        r.tick(1000);
+        assert_eq!(r.role, Role::Candidate);
+        r.on_event(RaftEvent::RPC((2, AppendEntries {
+            term: r.current_term + 3,
+            leader_id: 2,
+            prev_log_index: 233,
+            prev_log_term: 1,
+            entries: vec![],
+            leader_commit: 200
+        }.into())), 1005);
+        assert_eq!(r.role, Role::Follower);
+    }
+
+    #[test]
+    fn test_leader_become_follower_term() {
+        let mut r = test_raft_instance();
+        r.tick(1000);
+        r.role = Role::Leader;
+        r.on_event(RaftEvent::RPC((2, AppendEntries {
+            term: r.current_term + 3,
+            leader_id: 2,
+            prev_log_index: 233,
+            prev_log_term: 1,
+            entries: vec![],
+            leader_commit: 200
+        }.into())), 1005);
+        assert_eq!(r.role, Role::Follower);
     }
 }

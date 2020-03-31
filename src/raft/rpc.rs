@@ -78,6 +78,17 @@ pub enum RaftRPC {
     RequestVoteReply(RequestVoteReply),
 }
 
+impl RaftRPC {
+    pub fn term(&self) -> i64 {
+        match self {
+            RaftRPC::AppendEntries(AppendEntries { term, .. }) => *term,
+            RaftRPC::AppendEntriesReply(AppendEntriesReply { term, .. }) => *term,
+            RaftRPC::RequestVote(RequestVote { term, .. }) => *term,
+            RaftRPC::RequestVoteReply(RequestVoteReply { term, .. }) => *term
+        }
+    }
+}
+
 pub struct MockRPCService {
     pub rpc_log: Vec<(u64, RaftRPC)>,
 }
