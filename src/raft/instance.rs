@@ -2,7 +2,7 @@
 
 use crate::raft::event::RaftEvent;
 use crate::raft::log::Log;
-use crate::raft::rpc::{MockRPCService, RaftRPC, RequestVote, RequestVoteReply};
+use crate::raft::rpc::{AppendEntries, MockRPCService, RaftRPC, RequestVote, RequestVoteReply};
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -37,11 +37,11 @@ pub struct Raft {
     /// for each server, index of the next log entry to send to that serve
     /// (initialized to leader last log index + 1)
     /// This is a volatile state for leaders.
-    next_index: HashMap<i64, i64>,
+    next_index: HashMap<u64, i64>,
     /// for each server, index of highest log entry known to be replicated on server
     ///(initialized to 0)
     /// This is a volatile state for leaders.
-    match_index: HashMap<i64, i64>,
+    match_index: HashMap<u64, i64>,
 
     /// RPC service for Raft
     /// This is raft-kvs internal state.
@@ -121,14 +121,27 @@ impl Raft {
     }
 
     /// sync log to peer
-    fn sync_log_with(&mut self, peer: u64) {}
+    fn sync_log_with(&mut self, peer: u64) {
+        let entries = vec![];
+        self.rpc.send(
+            peer,
+            AppendEntries {
+                term: self.current_term,
+                leader_id: self.id,
+                prev_log_term: self.last_log_term(),
+                prev_log_index: self.last_log_index(),
+                entries,
+                leader_commit: self.commit_index,
+            }
+            .into(),
+        );
+    }
 
     /// become a follower
     fn become_follower(&mut self, current_tick: u64) {
         self.role = Role::Follower;
         self.election_start_at = current_tick + Self::tick_election_start_at();
     }
-
 
     /// become a candidate
     fn become_candidate(&mut self, current_tick: u64) {
@@ -140,6 +153,18 @@ impl Raft {
     // become a leader
     fn become_leader(&mut self) {
         self.role = Role::Leader;
+        // initialize leader-related data structure
+        self.match_index = HashMap::new();
+        self.next_index = HashMap::new();
+        for peer in self.known_peers.iter() {
+            let peer = *peer;
+            if peer != self.id {
+                self.match_index.insert(peer, 0);
+                self.next_index.insert(peer, self.last_log_index() + 1);
+            }
+        }
+        // send heartbeats to followers
+        self.heartbeats();
     }
 
     /// begin election
@@ -160,7 +185,7 @@ impl Raft {
                         last_log_index: self.last_log_index(),
                         last_log_term: self.last_log_term(),
                     }
-                        .into(),
+                    .into(),
                 );
             }
         }
@@ -193,24 +218,34 @@ impl Raft {
                         match event {
                             RaftRPC::RequestVote(request) => {
                                 if request.term < self.current_term {
-                                    self.rpc.send(from, RequestVoteReply {
-                                        term: self.current_term,
-                                        vote_granted: false,
-                                    }.into());
+                                    self.rpc.send(
+                                        from,
+                                        RequestVoteReply {
+                                            term: self.current_term,
+                                            vote_granted: false,
+                                        }
+                                        .into(),
+                                    );
                                 } else {
                                     let mut vote_granted = match self.voted_for {
                                         Some(candidate_id) => candidate_id == request.candidate_id,
-                                        None => true
+                                        None => true,
                                     };
                                     // TODO: how to check up-to-date?
                                     if request.last_log_index < self.last_log_index() {
                                         vote_granted = false;
                                     }
-                                    if vote_granted { self.voted_for = Some(request.candidate_id); }
-                                    self.rpc.send(from, RequestVoteReply {
-                                        term: self.current_term,
-                                        vote_granted,
-                                    }.into());
+                                    if vote_granted {
+                                        self.voted_for = Some(request.candidate_id);
+                                    }
+                                    self.rpc.send(
+                                        from,
+                                        RequestVoteReply {
+                                            term: self.current_term,
+                                            vote_granted,
+                                        }
+                                        .into(),
+                                    );
                                 }
                             }
                             _ => {}
@@ -253,10 +288,11 @@ impl Raft {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raft::rpc::{RaftRPC, RequestVoteReply, AppendEntries};
+    use crate::raft::rpc::{AppendEntries, RaftRPC, RequestVoteReply};
 
     #[test]
     fn test_new() {
@@ -268,6 +304,27 @@ mod tests {
         for log in rpc.rpc_log.iter() {
             match log {
                 (log_to, RaftRPC::RequestVote(_)) => {
+                    let log_to = *log_to;
+                    match m.get_mut(&log_to) {
+                        Some(x) => {
+                            *x += 1;
+                        }
+                        None => {
+                            m.insert(log_to, 1);
+                        }
+                    }
+                }
+                _ => {}
+            };
+        }
+        return m;
+    }
+
+    fn inspect_append_entries(rpc: &MockRPCService) -> HashMap<u64, u64> {
+        let mut m: HashMap<u64, u64> = HashMap::new();
+        for log in rpc.rpc_log.iter() {
+            match log {
+                (log_to, RaftRPC::AppendEntries(_)) => {
                     let log_to = *log_to;
                     match m.get_mut(&log_to) {
                         Some(x) => {
@@ -306,7 +363,12 @@ mod tests {
         let mut m: HashMap<u64, u64> = HashMap::new();
         for log in rpc.rpc_log.iter() {
             match log {
-                (log_to, RaftRPC::RequestVoteReply(RequestVoteReply { vote_granted: true, .. })) => {
+                (
+                    log_to,
+                    RaftRPC::RequestVoteReply(RequestVoteReply {
+                                                  vote_granted: true, ..
+                                              }),
+                ) => {
                     let log_to = *log_to;
                     match m.get_mut(&log_to) {
                         Some(x) => {
@@ -333,7 +395,7 @@ mod tests {
     fn inspect_has_request_vote_reply_to(rpc: &MockRPCService, to: u64) -> bool {
         match inspect_request_vote_reply(rpc).get(&to) {
             None => false,
-            Some(_) => true
+            Some(_) => true,
         }
     }
 
@@ -513,14 +575,21 @@ mod tests {
         let mut r = test_raft_instance();
         r.tick(1000);
         assert_eq!(r.role, Role::Candidate);
-        r.on_event(RaftEvent::RPC((2, AppendEntries {
-            term: r.current_term,
-            leader_id: 2,
-            prev_log_index: 233,
-            prev_log_term: 1,
-            entries: vec![],
-            leader_commit: 200
-        }.into())), 1005);
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                AppendEntries {
+                    term: r.current_term,
+                    leader_id: 2,
+                    prev_log_index: 233,
+                    prev_log_term: 1,
+                    entries: vec![],
+                    leader_commit: 200,
+                }
+                    .into(),
+            )),
+            1005,
+        );
         assert_eq!(r.role, Role::Follower);
     }
 
@@ -529,14 +598,21 @@ mod tests {
         let mut r = test_raft_instance();
         r.tick(1000);
         assert_eq!(r.role, Role::Candidate);
-        r.on_event(RaftEvent::RPC((2, AppendEntries {
-            term: r.current_term + 3,
-            leader_id: 2,
-            prev_log_index: 233,
-            prev_log_term: 1,
-            entries: vec![],
-            leader_commit: 200
-        }.into())), 1005);
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                AppendEntries {
+                    term: r.current_term + 3,
+                    leader_id: 2,
+                    prev_log_index: 233,
+                    prev_log_term: 1,
+                    entries: vec![],
+                    leader_commit: 200,
+                }
+                    .into(),
+            )),
+            1005,
+        );
         assert_eq!(r.role, Role::Follower);
     }
 
@@ -545,14 +621,29 @@ mod tests {
         let mut r = test_raft_instance();
         r.tick(1000);
         r.role = Role::Leader;
-        r.on_event(RaftEvent::RPC((2, AppendEntries {
-            term: r.current_term + 3,
-            leader_id: 2,
-            prev_log_index: 233,
-            prev_log_term: 1,
-            entries: vec![],
-            leader_commit: 200
-        }.into())), 1005);
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                AppendEntries {
+                    term: r.current_term + 3,
+                    leader_id: 2,
+                    prev_log_index: 233,
+                    prev_log_term: 1,
+                    entries: vec![],
+                    leader_commit: 200,
+                }
+                    .into(),
+            )),
+            1005,
+        );
         assert_eq!(r.role, Role::Follower);
+    }
+
+    #[test]
+    fn test_leader_heartbeat() {
+        let mut r = test_raft_instance();
+        r.begin_election(100);
+        r.become_leader();
+        assert_eq!(inspect_append_entries(&r.rpc).len(), 4);
     }
 }
