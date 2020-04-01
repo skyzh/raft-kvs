@@ -2,8 +2,11 @@
 
 use crate::raft::event::RaftEvent;
 use crate::raft::log::Log;
-use crate::raft::rpc::{AppendEntries, MockRPCService, RaftRPC, RequestVote, RequestVoteReply};
+use crate::raft::rpc::{
+    AppendEntries, AppendEntriesReply, MockRPCService, RaftRPC, RequestVote, RequestVoteReply,
+};
 use rand::Rng;
+use slog::info;
 use std::collections::HashMap;
 
 /// Raft role
@@ -67,11 +70,15 @@ pub struct Raft {
     /// number of votes a candidate gets
     /// This is raft-kvs internal state. Should be reset when become candidate.
     vote_from: HashMap<u64, ()>,
+
+    /// logger
+    /// This is raft-kvs internal state.
+    logger: slog::Logger,
 }
 
 impl Raft {
     /// create new raft instance
-    pub fn new(known_peers: Vec<u64>) -> Self {
+    pub fn new(known_peers: Vec<u64>, logger: slog::Logger, id: u64) -> Self {
         Raft {
             current_term: 0,
             voted_for: None,
@@ -80,13 +87,14 @@ impl Raft {
             last_applied: 0,
             next_index: HashMap::new(),
             match_index: HashMap::new(),
-            rpc: MockRPCService::new(),
+            rpc: MockRPCService::new(logger.clone(), id),
             role: Role::Follower,
             election_start_at: 0,
             election_timeout_at: 0,
             known_peers,
-            id: 1,
+            id,
             vote_from: HashMap::new(),
+            logger,
         }
     }
 
@@ -165,6 +173,7 @@ impl Raft {
 
     /// become a candidate
     fn become_candidate(&mut self, current_tick: u64) {
+        info!(self.logger, "role transition"; "role" => format!("{:?}->{:?}", self.role, Role::Candidate));
         self.current_term += 1;
         self.role = Role::Candidate;
         self.begin_election(current_tick);
@@ -232,6 +241,90 @@ impl Raft {
         }
     }
 
+    /// candidate rpc event
+    fn candidate_rpc_event(&mut self, from: u64, event: RaftRPC, current_tick: u64) {
+        match event {
+            RaftRPC::RequestVoteReply(reply) => {
+                if reply.vote_granted {
+                    self.vote_from.insert(from, ());
+                    if self.vote_from.len() * 2 >= self.known_peers.len() {
+                        self.become_leader();
+                    }
+                }
+            }
+            RaftRPC::AppendEntries(request) => {
+                if request.term == self.current_term {
+                    self.become_follower(current_tick);
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// follower rpc event
+    fn follower_rpc_event(&mut self, from: u64, event: RaftRPC, current_tick: u64) {
+        match event {
+            RaftRPC::RequestVote(request) => {
+                if request.term < self.current_term {
+                    self.rpc.send(
+                        from,
+                        RequestVoteReply {
+                            term: self.current_term,
+                            vote_granted: false,
+                        }
+                        .into(),
+                    );
+                    return;
+                }
+                let mut vote_granted = match self.voted_for {
+                    Some(candidate_id) => candidate_id == request.candidate_id,
+                    None => true,
+                };
+                // TODO: how to check up-to-date?
+                if request.last_log_index < self.last_log_index() {
+                    vote_granted = false;
+                }
+                if vote_granted {
+                    self.voted_for = Some(request.candidate_id);
+                }
+                self.rpc.send(
+                    from,
+                    RequestVoteReply {
+                        term: self.current_term,
+                        vote_granted,
+                    }
+                    .into(),
+                );
+            }
+            RaftRPC::AppendEntries(request) => {
+                let mut ok = false;
+                if request.term < self.current_term {
+                    info!(self.logger, "append entries failed"; "reason" => "lower term");
+                } else if request.prev_log_index > self.last_log_index() {
+                    info!(self.logger, "append entries failed"; "reason" => "log not found");
+                } else {
+                    if self.log_term_of(request.prev_log_index) == request.prev_log_term {
+                        ok = true;
+                    } else {
+                        info!(self.logger, "append entries failed"; "reason" => "term not match");
+                    }
+                }
+                if ok {
+                    let length = request.entries.len();
+                    self.log.drain(request.prev_log_index as usize..);
+                    self.log.extend(request.entries);
+                    info!(self.logger, "append entries success";
+                            "entries_processed" => length,
+                            "log_length" => self.log.len());
+                }
+                self.rpc
+                    .send(from, AppendEntriesReply::new(self.current_term, ok).into());
+            }
+            _ => {}
+        }
+    }
+
     /// process Raft event
     pub fn on_event(&mut self, event: RaftEvent, current_tick: u64) {
         match event {
@@ -240,62 +333,8 @@ impl Raft {
                     self.become_follower(current_tick);
                 }
                 match self.role {
-                    Role::Follower => {
-                        match event {
-                            RaftRPC::RequestVote(request) => {
-                                if request.term < self.current_term {
-                                    self.rpc.send(
-                                        from,
-                                        RequestVoteReply {
-                                            term: self.current_term,
-                                            vote_granted: false,
-                                        }
-                                        .into(),
-                                    );
-                                } else {
-                                    let mut vote_granted = match self.voted_for {
-                                        Some(candidate_id) => candidate_id == request.candidate_id,
-                                        None => true,
-                                    };
-                                    // TODO: how to check up-to-date?
-                                    if request.last_log_index < self.last_log_index() {
-                                        vote_granted = false;
-                                    }
-                                    if vote_granted {
-                                        self.voted_for = Some(request.candidate_id);
-                                    }
-                                    self.rpc.send(
-                                        from,
-                                        RequestVoteReply {
-                                            term: self.current_term,
-                                            vote_granted,
-                                        }
-                                        .into(),
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    Role::Candidate => {
-                        match event {
-                            RaftRPC::RequestVoteReply(reply) => {
-                                if reply.vote_granted {
-                                    self.vote_from.insert(from, ());
-                                    if self.vote_from.len() * 2 >= self.known_peers.len() {
-                                        self.become_leader();
-                                    }
-                                }
-                            }
-                            RaftRPC::AppendEntries(request) => {
-                                if request.term == self.current_term {
-                                    self.become_follower(current_tick);
-                                    // TODO: reply to append entries as candidate
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    Role::Follower => self.follower_rpc_event(from, event, current_tick),
+                    Role::Candidate => self.candidate_rpc_event(from, event, current_tick),
                     Role::Leader => {}
                 }
             }

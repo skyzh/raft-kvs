@@ -1,6 +1,8 @@
 use raft_kvs::raft::{event::*, instance::*, log::*, rpc::*};
 use std::collections::HashMap;
+
 mod utils;
+
 use utils::*;
 
 #[test]
@@ -110,4 +112,100 @@ fn test_respond_to_vote_stale_log() {
         100,
     );
     assert!(!inspect_has_request_vote_reply_to(&r.rpc, 2));
+}
+
+#[test]
+fn test_append_log() {
+    let mut r = new_test_raft_instance();
+    r.on_event(
+        RaftEvent::RPC((
+            2,
+            AppendEntries {
+                term: 1,
+                leader_id: 2,
+                prev_log_index: 0,
+                prev_log_term: 0,
+                entries: vec![(1, random_log()), (1, random_log())],
+                leader_commit: 0,
+            }
+            .into(),
+        )),
+        100,
+    );
+    assert_eq!(r.log.len(), 2);
+    r.on_event(
+        RaftEvent::RPC((
+            2,
+            AppendEntries {
+                term: 1,
+                leader_id: 2,
+                prev_log_index: 2,
+                prev_log_term: 1,
+                entries: vec![(1, random_log()), (1, random_log())],
+                leader_commit: 0,
+            }
+            .into(),
+        )),
+        105,
+    );
+    assert_eq!(r.log.len(), 4);
+}
+
+#[test]
+fn test_append_log_purge() {
+    let mut r = new_test_raft_instance();
+    r.on_event(
+        RaftEvent::RPC((
+            2,
+            AppendEntries {
+                term: 1,
+                leader_id: 2,
+                prev_log_index: 0,
+                prev_log_term: 0,
+                entries: vec![(1, random_log()), (1, random_log())],
+                leader_commit: 0,
+            }
+            .into(),
+        )),
+        100,
+    );
+    assert_eq!(r.log.len(), 2);
+    r.on_event(
+        RaftEvent::RPC((
+            2,
+            AppendEntries {
+                term: 1,
+                leader_id: 2,
+                prev_log_index: 1,
+                prev_log_term: 1,
+                entries: vec![(1, random_log()), (1, random_log())],
+                leader_commit: 0,
+            }
+            .into(),
+        )),
+        105,
+    );
+    assert_eq!(r.log.len(), 3);
+}
+
+#[test]
+fn test_reject_log_term_id() {
+    let mut r = new_test_raft_instance();
+    r.current_term = 200;
+    r.on_event(
+        RaftEvent::RPC((
+            2,
+            AppendEntries {
+                term: 1,
+                leader_id: 2,
+                prev_log_index: 0,
+                prev_log_term: 0,
+                entries: vec![(1, random_log()), (1, random_log())],
+                leader_commit: 0,
+            }
+            .into(),
+        )),
+        100,
+    );
+    assert_eq!(r.log.len(), 0);
 }

@@ -1,5 +1,21 @@
 use raft_kvs::raft::{event::*, instance::*, log::*, rpc::*};
+use slog::{info, o, Drain};
 use std::collections::HashMap;
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref LOGGER: slog::Logger = {
+        let decorator = slog_term::TermDecorator::new().build();
+        let drain = slog_term::FullFormat::new(decorator).build().fuse();
+        let drain = slog_async::Async::new(drain).build().fuse();
+        let log = slog::Logger::root(drain, o!());
+        log
+    };
+}
+
+pub fn new_test_raft_instance() -> Raft {
+    Raft::new(vec![1, 2, 3, 4, 5], LOGGER.clone(), 1)
+}
 
 pub fn inspect_request_vote(rpc: &MockRPCService) -> HashMap<u64, u64> {
     let mut m: HashMap<u64, u64> = HashMap::new();
@@ -55,10 +71,6 @@ pub fn inspect_has_request_vote_to(rpc: &MockRPCService, to: u64) -> bool {
         None => false,
         Some(_) => true,
     }
-}
-
-pub fn new_test_raft_instance() -> Raft {
-    Raft::new(vec![1, 2, 3, 4, 5])
 }
 
 pub fn inspect_request_vote_reply(rpc: &MockRPCService) -> HashMap<u64, u64> {
@@ -153,4 +165,8 @@ pub fn inspect_has_append_entries_content_to(
         Some(_) => true,
         None => false,
     }
+}
+
+pub fn random_log() -> Log {
+    Log::Get("2333".into())
 }

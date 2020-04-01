@@ -1,7 +1,7 @@
 use raft_kvs::raft::{event::*, instance::*, log::*, rpc::*};
 use std::collections::HashMap;
 
-mod utils;
+pub mod utils;
 
 use raft_kvs::raft::log::Log::Get;
 use utils::*;

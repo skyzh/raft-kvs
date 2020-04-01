@@ -1,8 +1,10 @@
 //! Define RPC calls and RPC service for Raft
 
 use crate::raft::log::Log;
+use slog::info;
 
 /// AppendEntries RPC
+#[derive(Debug)]
 pub struct AppendEntries {
     /// leader's term
     pub term: i64,
@@ -19,6 +21,7 @@ pub struct AppendEntries {
 }
 
 /// AppendEntries RPC Reply
+#[derive(Debug)]
 pub struct AppendEntriesReply {
     /// current term, for leader to update itself
     pub term: i64,
@@ -26,7 +29,14 @@ pub struct AppendEntriesReply {
     pub success: bool,
 }
 
+impl AppendEntriesReply {
+    pub fn new(term: i64, success: bool) -> Self {
+        Self { term, success }
+    }
+}
+
 /// RequestVote RPC
+#[derive(Debug)]
 pub struct RequestVote {
     /// candidate's term
     pub term: i64,
@@ -39,6 +49,7 @@ pub struct RequestVote {
 }
 
 /// RequestVote RPC Reply
+#[derive(Debug)]
 pub struct RequestVoteReply {
     /// current term, for candidate to update itself
     pub term: i64,
@@ -70,6 +81,7 @@ impl Into<RaftRPC> for RequestVoteReply {
     }
 }
 
+#[derive(Debug)]
 pub enum RaftRPC {
     AppendEntries(AppendEntries),
     AppendEntriesReply(AppendEntriesReply),
@@ -88,15 +100,26 @@ impl RaftRPC {
     }
 }
 
+/// A RPC Service for testing purpose
 pub struct MockRPCService {
+    /// RPC requests from client
     pub rpc_log: Vec<(u64, RaftRPC)>,
+    /// Logger
+    log: slog::Logger,
+    /// instance id of Raft instance using this RPC service
+    instance_id: u64,
 }
 
 impl MockRPCService {
-    pub fn new() -> Self {
-        Self { rpc_log: vec![] }
+    pub fn new(logger: slog::Logger, instance_id: u64) -> Self {
+        Self {
+            rpc_log: vec![],
+            log: logger,
+            instance_id,
+        }
     }
-    pub fn send(&mut self, peer: u64, log: RaftRPC) {
-        self.rpc_log.push((peer, log));
+    pub fn send(&mut self, peer: u64, msg: RaftRPC) {
+        info!(self.log, "send"; "msg" => format!("{:?}", msg));
+        self.rpc_log.push((peer, msg));
     }
 }
