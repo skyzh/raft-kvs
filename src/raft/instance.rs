@@ -115,13 +115,13 @@ impl Raft {
         for peer in self.known_peers.clone().iter() {
             let peer = *peer;
             if peer != self.id {
-                self.sync_log_with(peer);
+                self.heartbeat(peer);
             }
         }
     }
 
-    /// sync log to peer
-    fn sync_log_with(&mut self, peer: u64) {
+    /// send heartbeat to peer
+    fn heartbeat(&mut self, peer: u64) {
         let entries = vec![];
         self.rpc.send(
             peer,
@@ -131,6 +131,26 @@ impl Raft {
                 prev_log_term: self.last_log_term(),
                 prev_log_index: self.last_log_index(),
                 entries,
+                leader_commit: self.commit_index,
+            }
+            .into(),
+        );
+    }
+
+    /// sync log to peer
+    fn sync_log_with(&mut self, peer: u64) {
+        let next_idx = *self.next_index.get(&peer).unwrap();
+        if self.last_log_index() < next_idx {
+            return;
+        }
+        self.rpc.send(
+            peer,
+            AppendEntries {
+                term: self.current_term,
+                leader_id: self.id,
+                prev_log_term: self.log_term_of(next_idx - 1),
+                prev_log_index: next_idx - 1,
+                entries: vec![self.log[next_idx as usize - 1].clone()],
                 leader_commit: self.commit_index,
             }
             .into(),
@@ -200,9 +220,15 @@ impl Raft {
     /// get last log term
     /// returns 0 if there's no log
     fn last_log_term(&self) -> i64 {
-        match self.log.last() {
-            Some(x) => x.0,
-            None => 0,
+        self.log_term_of(self.last_log_index())
+    }
+
+    /// get term of log given id
+    fn log_term_of(&self, id: i64) -> i64 {
+        if id == 0 {
+            0
+        } else {
+            self.log[id as usize - 1].0 as i64
         }
     }
 
@@ -274,6 +300,17 @@ impl Raft {
                 }
             }
             _ => unimplemented!(),
+        }
+    }
+
+    /// append log
+    pub fn append_log(&mut self, log: Log) {
+        self.log.push((self.current_term, log));
+        for peer in self.known_peers.clone().iter() {
+            let peer = *peer;
+            if peer != self.id {
+                self.sync_log_with(peer);
+            }
         }
     }
 

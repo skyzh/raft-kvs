@@ -1,10 +1,10 @@
+use raft_kvs::raft::{event::*, instance::*, log::*, rpc::*};
 use std::collections::HashMap;
-use raft_kvs::raft::{rpc::*, instance::*, log::*, event::*};
 mod utils;
 use utils::*;
 
 #[test]
-fn test_follower_become_candidate() {
+fn test_become_candidate() {
     let mut r = new_test_raft_instance();
     r.tick(1000);
     // should change role and increase term number
@@ -25,7 +25,7 @@ fn test_begin_as_follower() {
 }
 
 #[test]
-fn test_follower_respond_to_one_vote() {
+fn test_respond_to_one_vote() {
     let mut r = new_test_raft_instance();
     r.current_term = 1;
     r.on_event(
@@ -37,7 +37,7 @@ fn test_follower_respond_to_one_vote() {
                 last_log_term: 0,
                 last_log_index: 0,
             }
-                .into(),
+            .into(),
         )),
         100,
     );
@@ -50,7 +50,7 @@ fn test_follower_respond_to_one_vote() {
                 last_log_term: 0,
                 last_log_index: 0,
             }
-                .into(),
+            .into(),
         )),
         101,
     );
@@ -63,7 +63,7 @@ fn test_follower_respond_to_one_vote() {
                 last_log_term: 0,
                 last_log_index: 0,
             }
-                .into(),
+            .into(),
         )),
         105,
     );
@@ -72,7 +72,7 @@ fn test_follower_respond_to_one_vote() {
 }
 
 #[test]
-fn test_follower_respond_to_lower_term_vote() {
+fn test_respond_to_lower_term_vote() {
     let mut r = new_test_raft_instance();
     r.current_term = 233;
     r.on_event(
@@ -84,7 +84,7 @@ fn test_follower_respond_to_lower_term_vote() {
                 last_log_term: 0,
                 last_log_index: 0,
             }
-                .into(),
+            .into(),
         )),
         100,
     );
@@ -92,7 +92,7 @@ fn test_follower_respond_to_lower_term_vote() {
 }
 
 #[test]
-fn test_follower_respond_to_vote_stale_log() {
+fn test_respond_to_vote_stale_log() {
     let mut r = new_test_raft_instance();
     r.current_term = 1;
     r.log.push((1, Log::Get("233".into())));
@@ -105,7 +105,7 @@ fn test_follower_respond_to_vote_stale_log() {
                 last_log_term: 0,
                 last_log_index: 0,
             }
-                .into(),
+            .into(),
         )),
         100,
     );

@@ -13,7 +13,7 @@ pub struct AppendEntries {
     /// term of prev_log_index entry
     pub prev_log_term: i64,
     /// log entries to store (empty for heartbeat)
-    pub entries: Vec<Log>,
+    pub entries: Vec<(i64, Log)>,
     /// leader's commit index
     pub leader_commit: i64,
 }

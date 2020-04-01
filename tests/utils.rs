@@ -1,5 +1,5 @@
+use raft_kvs::raft::{event::*, instance::*, log::*, rpc::*};
 use std::collections::HashMap;
-use raft_kvs::raft::{rpc::*, instance::*, log::*, event::*};
 
 pub fn inspect_request_vote(rpc: &MockRPCService) -> HashMap<u64, u64> {
     let mut m: HashMap<u64, u64> = HashMap::new();
@@ -68,8 +68,8 @@ pub fn inspect_request_vote_reply(rpc: &MockRPCService) -> HashMap<u64, u64> {
             (
                 log_to,
                 RaftRPC::RequestVoteReply(RequestVoteReply {
-                                              vote_granted: true, ..
-                                          }),
+                    vote_granted: true, ..
+                }),
             ) => {
                 let log_to = *log_to;
                 match m.get_mut(&log_to) {
@@ -115,11 +115,42 @@ pub fn get_leader_instance() -> Raft {
                     term: 1,
                     vote_granted: true,
                 }
-                    .into(),
+                .into(),
             )),
             100 + i,
         );
     }
     assert_eq!(r.role, Role::Leader);
     r
+}
+
+pub fn inspect_append_entries_content(rpc: &MockRPCService, find_log: &Log) -> HashMap<u64, ()> {
+    let mut m: HashMap<u64, ()> = HashMap::new();
+    for log in rpc.rpc_log.iter() {
+        match log {
+            (log_to, RaftRPC::AppendEntries(AppendEntries { entries, .. })) => {
+                if entries
+                    .into_iter()
+                    .map(|x| x.1.clone())
+                    .collect::<Vec<Log>>()
+                    .contains(find_log)
+                {
+                    m.insert(*log_to, ());
+                }
+            }
+            _ => {}
+        };
+    }
+    return m;
+}
+
+pub fn inspect_has_append_entries_content_to(
+    rpc: &MockRPCService,
+    find_log: &Log,
+    to: u64,
+) -> bool {
+    match inspect_append_entries_content(rpc, find_log).get(&to) {
+        Some(_) => true,
+        None => false,
+    }
 }
