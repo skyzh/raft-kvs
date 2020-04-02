@@ -33,6 +33,7 @@ fn test_respond_to_one_vote() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             RequestVote {
                 term: 1,
                 candidate_id: 2,
@@ -46,6 +47,7 @@ fn test_respond_to_one_vote() {
     r.on_event(
         RaftEvent::RPC((
             3,
+            0,
             RequestVote {
                 term: 1,
                 candidate_id: 3,
@@ -59,6 +61,7 @@ fn test_respond_to_one_vote() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             RequestVote {
                 term: 1,
                 candidate_id: 2,
@@ -80,6 +83,7 @@ fn test_respond_to_lower_term_vote() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             RequestVote {
                 term: 1,
                 candidate_id: 2,
@@ -101,6 +105,7 @@ fn test_respond_to_vote_stale_log() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             RequestVote {
                 term: 1,
                 candidate_id: 2,
@@ -120,6 +125,7 @@ fn test_append_log() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             AppendEntries {
                 term: 1,
                 leader_id: 2,
@@ -136,6 +142,7 @@ fn test_append_log() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             AppendEntries {
                 term: 1,
                 leader_id: 2,
@@ -157,6 +164,7 @@ fn test_append_log_purge() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             AppendEntries {
                 term: 1,
                 leader_id: 2,
@@ -173,6 +181,7 @@ fn test_append_log_purge() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             AppendEntries {
                 term: 1,
                 leader_id: 2,
@@ -195,6 +204,7 @@ fn test_reject_log_term_id() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             AppendEntries {
                 term: 1,
                 leader_id: 2,

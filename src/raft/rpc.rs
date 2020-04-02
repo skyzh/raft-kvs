@@ -33,6 +33,10 @@ impl AppendEntriesReply {
     pub fn new(term: i64, success: bool) -> Self {
         Self { term, success }
     }
+
+    pub fn reply(self, msg_id: u64) -> RaftRPC {
+        RaftRPC::AppendEntriesReply(msg_id, self)
+    }
 }
 
 /// RequestVote RPC
@@ -57,12 +61,6 @@ pub struct RequestVoteReply {
     pub vote_granted: bool,
 }
 
-impl Into<RaftRPC> for AppendEntriesReply {
-    fn into(self) -> RaftRPC {
-        RaftRPC::AppendEntriesReply(self)
-    }
-}
-
 impl Into<RaftRPC> for AppendEntries {
     fn into(self) -> RaftRPC {
         RaftRPC::AppendEntries(self)
@@ -84,7 +82,7 @@ impl Into<RaftRPC> for RequestVoteReply {
 #[derive(Debug)]
 pub enum RaftRPC {
     AppendEntries(AppendEntries),
-    AppendEntriesReply(AppendEntriesReply),
+    AppendEntriesReply(u64, AppendEntriesReply),
     RequestVote(RequestVote),
     RequestVoteReply(RequestVoteReply),
 }
@@ -93,7 +91,7 @@ impl RaftRPC {
     pub fn term(&self) -> i64 {
         match self {
             RaftRPC::AppendEntries(AppendEntries { term, .. }) => *term,
-            RaftRPC::AppendEntriesReply(AppendEntriesReply { term, .. }) => *term,
+            RaftRPC::AppendEntriesReply(_, AppendEntriesReply { term, .. }) => *term,
             RaftRPC::RequestVote(RequestVote { term, .. }) => *term,
             RaftRPC::RequestVoteReply(RequestVoteReply { term, .. }) => *term,
         }
@@ -111,6 +109,7 @@ pub struct MockRPCService {
 }
 
 impl MockRPCService {
+    /// create new MockRPCService
     pub fn new(logger: slog::Logger, instance_id: u64) -> Self {
         Self {
             rpc_log: vec![],
@@ -118,8 +117,11 @@ impl MockRPCService {
             instance_id,
         }
     }
-    pub fn send(&mut self, peer: u64, msg: RaftRPC) {
+
+    /// send `msg` to `peer`, returns RPC id for this request
+    pub fn send(&mut self, peer: u64, msg: RaftRPC) -> u64 {
         info!(self.log, "send"; "msg" => format!("{:?}", msg));
         self.rpc_log.push((peer, msg));
+        self.rpc_log.len() as u64 - 1
     }
 }

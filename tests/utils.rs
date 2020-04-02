@@ -1,13 +1,13 @@
+use lazy_static::lazy_static;
 use raft_kvs::raft::{event::*, instance::*, log::*, rpc::*};
 use slog::{info, o, Drain};
 use std::collections::HashMap;
-use lazy_static::lazy_static;
 
 lazy_static! {
     static ref LOGGER: slog::Logger = {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::FullFormat::new(decorator).build().fuse();
-        let drain = slog_async::Async::new(drain).build().fuse();
+        let drain = slog_async::Async::new(drain).chan_size(1024).build().fuse();
         let log = slog::Logger::root(drain, o!());
         log
     };
@@ -123,6 +123,7 @@ pub fn get_leader_instance() -> Raft {
         r.on_event(
             RaftEvent::RPC((
                 i as u64,
+                0,
                 RequestVoteReply {
                     term: 1,
                     vote_granted: true,

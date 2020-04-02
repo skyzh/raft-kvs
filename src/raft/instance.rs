@@ -71,6 +71,10 @@ pub struct Raft {
     /// This is raft-kvs internal state. Should be reset when become candidate.
     vote_from: HashMap<u64, ()>,
 
+    /// used to pair RPC request with RPC response. Will be periodically cleared.
+    /// This is a raft-kvs internal state.
+    pub rpc_append_entries_log_idx: HashMap<u64, (i64, u64)>,
+
     /// logger
     /// This is raft-kvs internal state.
     logger: slog::Logger,
@@ -95,6 +99,7 @@ impl Raft {
             id,
             vote_from: HashMap::new(),
             logger,
+            rpc_append_entries_log_idx: HashMap::new(),
         }
     }
 
@@ -103,27 +108,42 @@ impl Raft {
     pub fn tick(&mut self, current_tick: u64) {
         match self.role {
             Role::Follower => {
+                // start election is there's no reply from leader
                 if current_tick > self.election_start_at {
                     self.become_candidate(current_tick);
                 }
             }
             Role::Candidate => {
+                // restart election if there's not enough vote and there's no leader
                 if current_tick > self.election_timeout_at {
                     self.begin_election(current_tick);
                 }
             }
             Role::Leader => {
-                self.heartbeats();
+                // periodically send heartbeats to followers
+                self.heartbeats(current_tick);
+            }
+        }
+        self.update_rpc_cache(current_tick);
+    }
+
+    /// update RPC request-response pairing cache
+    fn update_rpc_cache(&mut self, current_tick: u64) {
+        let expired = std::mem::replace(&mut self.rpc_append_entries_log_idx, HashMap::new());
+        for (req, (idx, timestamp)) in expired.into_iter() {
+            if timestamp + 10000 >= current_tick {
+                self.rpc_append_entries_log_idx
+                    .insert(req, (idx, timestamp));
             }
         }
     }
 
     /// send heartbeats to followers
-    fn heartbeats(&mut self) {
+    fn heartbeats(&mut self, current_tick: u64) {
         for peer in self.known_peers.clone().iter() {
             let peer = *peer;
             if peer != self.id {
-                self.heartbeat(peer);
+                self.sync_log_with(peer, current_tick);
             }
         }
     }
@@ -146,27 +166,32 @@ impl Raft {
     }
 
     /// sync log to peer
-    fn sync_log_with(&mut self, peer: u64) {
+    fn sync_log_with(&mut self, peer: u64, current_tick: u64) {
         let next_idx = *self.next_index.get(&peer).unwrap();
         if self.last_log_index() < next_idx {
+            self.heartbeat(peer);
             return;
         }
-        self.rpc.send(
+        let prev_log_index = next_idx - 1;
+        let rpc_id = self.rpc.send(
             peer,
             AppendEntries {
                 term: self.current_term,
                 leader_id: self.id,
                 prev_log_term: self.log_term_of(next_idx - 1),
-                prev_log_index: next_idx - 1,
+                prev_log_index,
                 entries: vec![self.log[next_idx as usize - 1].clone()],
                 leader_commit: self.commit_index,
             }
             .into(),
         );
+        self.rpc_append_entries_log_idx
+            .insert(rpc_id, (prev_log_index, current_tick));
     }
 
     /// become a follower
     fn become_follower(&mut self, current_tick: u64) {
+        info!(self.logger, "role transition"; "role" => format!("{:?}->{:?}", self.role, Role::Follower));
         self.role = Role::Follower;
         self.election_start_at = current_tick + Self::tick_election_start_at();
     }
@@ -180,7 +205,8 @@ impl Raft {
     }
 
     // become a leader
-    fn become_leader(&mut self) {
+    fn become_leader(&mut self, current_tick: u64) {
+        info!(self.logger, "role transition"; "role" => format!("{:?}->{:?}", self.role, Role::Leader));
         self.role = Role::Leader;
         // initialize leader-related data structure
         self.match_index = HashMap::new();
@@ -193,7 +219,7 @@ impl Raft {
             }
         }
         // send heartbeats to followers
-        self.heartbeats();
+        self.heartbeats(current_tick);
     }
 
     /// begin election
@@ -242,13 +268,13 @@ impl Raft {
     }
 
     /// candidate rpc event
-    fn candidate_rpc_event(&mut self, from: u64, event: RaftRPC, current_tick: u64) {
+    fn candidate_rpc_event(&mut self, from: u64, msg_id: u64, event: RaftRPC, current_tick: u64) {
         match event {
             RaftRPC::RequestVoteReply(reply) => {
                 if reply.vote_granted {
-                    self.vote_from.insert(from, ());
+                    self.vote_from.entry(from).or_insert(());
                     if self.vote_from.len() * 2 >= self.known_peers.len() {
-                        self.become_leader();
+                        self.become_leader(current_tick);
                     }
                 }
             }
@@ -263,7 +289,7 @@ impl Raft {
     }
 
     /// follower rpc event
-    fn follower_rpc_event(&mut self, from: u64, event: RaftRPC, current_tick: u64) {
+    fn follower_rpc_event(&mut self, from: u64, msg_id: u64, event: RaftRPC, current_tick: u64) {
         match event {
             RaftRPC::RequestVote(request) => {
                 if request.term < self.current_term {
@@ -298,6 +324,9 @@ impl Raft {
                 );
             }
             RaftRPC::AppendEntries(request) => {
+                // reset election timer
+                self.election_start_at = current_tick + Self::tick_election_start_at();
+
                 let mut ok = false;
                 if request.term < self.current_term {
                     info!(self.logger, "append entries failed"; "reason" => "lower term");
@@ -318,8 +347,33 @@ impl Raft {
                             "entries_processed" => length,
                             "log_length" => self.log.len());
                 }
-                self.rpc
-                    .send(from, AppendEntriesReply::new(self.current_term, ok).into());
+                self.rpc.send(
+                    from,
+                    AppendEntriesReply::new(self.current_term, ok).reply(msg_id),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// leader rpc event
+    fn leader_rpc_event(&mut self, from: u64, msg_id: u64, event: RaftRPC, current_tick: u64) {
+        match event {
+            RaftRPC::AppendEntriesReply(reply_to, response) => {
+                let prev_match_index = self.rpc_append_entries_log_idx.get(&reply_to);
+                if prev_match_index.is_none() {
+                    return;
+                }
+                let prev_match_index = prev_match_index.unwrap().0;
+                self.rpc_append_entries_log_idx.remove(&reply_to);
+                if response.success {
+                    *self.match_index.get_mut(&from).unwrap() = prev_match_index + 1;
+                    *self.next_index.get_mut(&from).unwrap() = prev_match_index + 2;
+                } else {
+                    *self.next_index.get_mut(&from).unwrap() = prev_match_index;
+                    info!(self.logger, "append failed";
+                            "prev_match_index" => prev_match_index, "from" => from);
+                }
             }
             _ => {}
         }
@@ -328,14 +382,14 @@ impl Raft {
     /// process Raft event
     pub fn on_event(&mut self, event: RaftEvent, current_tick: u64) {
         match event {
-            RaftEvent::RPC((from, event)) => {
+            RaftEvent::RPC((from, msg_id, event)) => {
                 if event.term() > self.current_term {
                     self.become_follower(current_tick);
                 }
                 match self.role {
-                    Role::Follower => self.follower_rpc_event(from, event, current_tick),
-                    Role::Candidate => self.candidate_rpc_event(from, event, current_tick),
-                    Role::Leader => {}
+                    Role::Follower => self.follower_rpc_event(from, msg_id, event, current_tick),
+                    Role::Candidate => self.candidate_rpc_event(from, msg_id, event, current_tick),
+                    Role::Leader => self.leader_rpc_event(from, msg_id, event, current_tick),
                 }
             }
             _ => unimplemented!(),
@@ -343,12 +397,12 @@ impl Raft {
     }
 
     /// append log
-    pub fn append_log(&mut self, log: Log) {
+    pub fn append_log(&mut self, log: Log, current_tick: u64) {
         self.log.push((self.current_term, log));
         for peer in self.known_peers.clone().iter() {
             let peer = *peer;
             if peer != self.id {
-                self.sync_log_with(peer);
+                self.sync_log_with(peer, current_tick);
             }
         }
     }

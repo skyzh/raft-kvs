@@ -5,6 +5,7 @@ pub mod utils;
 
 use raft_kvs::raft::log::Log::Get;
 use utils::*;
+use std::time::Duration;
 
 #[test]
 fn test_become_follower_term() {
@@ -14,6 +15,7 @@ fn test_become_follower_term() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             AppendEntries {
                 term: r.current_term + 3,
                 leader_id: 2,
@@ -22,7 +24,7 @@ fn test_become_follower_term() {
                 entries: vec![],
                 leader_commit: 200,
             }
-            .into(),
+                .into(),
         )),
         1005,
     );
@@ -37,16 +39,168 @@ fn test_heartbeat() {
 
 #[test]
 fn test_sync_log() {
-    let r = get_leader_instance();
+    let mut r = get_leader_instance();
+    let mut tick = 1000;
+    for i in 0..100 {
+        r.append_log(random_log(), tick);
+        let x = r
+            .rpc
+            .rpc_log
+            .iter()
+            .enumerate()
+            .map(|x| match x.1 {
+                (2, RaftRPC::AppendEntries(xx)) => {
+                    if xx.entries.len() != 0 && xx.prev_log_index == i {
+                        Some((x.0 as u64, xx))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .find(|x| x.is_some());
+        assert!(x.is_some());
+        let x = x.unwrap().unwrap();
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                0,
+                AppendEntriesReply {
+                    term: r.current_term,
+                    success: true,
+                }
+                    .reply(x.0),
+            )),
+            tick + 5,
+        );
+        tick += 10;
+        r.tick(tick);
+        tick += 10;
+    }
+}
+
+
+#[test]
+fn test_sync_log_not_match() {
+    let mut r = get_leader_instance();
+    let mut tick = 1000;
+    // sync 20 logs first
+    for i in 0..20 {
+        r.append_log(random_log(), tick);
+        let x = r
+            .rpc
+            .rpc_log
+            .iter()
+            .enumerate()
+            .map(|x| match x.1 {
+                (2, RaftRPC::AppendEntries(xx)) => {
+                    if xx.entries.len() != 0 && xx.prev_log_index == i {
+                        Some((x.0 as u64, xx))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .find(|x| x.is_some());
+        assert!(x.is_some());
+        let x = x.unwrap().unwrap();
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                0,
+                AppendEntriesReply {
+                    term: r.current_term,
+                    success: true,
+                }
+                    .reply(x.0),
+            )),
+            tick + 5,
+        );
+        tick += 10;
+        r.tick(tick);
+        tick += 10;
+    }
+    let mut lst_scanned_idx = r.rpc.rpc_log.len();
+    // reject 10 logs
+    for i in 0..10 {
+        tick += 100;
+        r.append_log(random_log(), tick);
+        let x = r
+            .rpc
+            .rpc_log
+            .iter()
+            .enumerate()
+            .map(|x| match x.1 {
+                (2, RaftRPC::AppendEntries(xx)) => {
+                    if xx.entries.len() != 0 && x.0 >= lst_scanned_idx {
+                        Some((x.0 as u64, xx))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .find(|x| x.is_some());
+        assert!(x.is_some());
+        let x = x.unwrap().unwrap();
+        lst_scanned_idx = r.rpc.rpc_log.len();
+        tick += 5;
+        r.on_event(
+            RaftEvent::RPC((
+                2,
+                0,
+                AppendEntriesReply {
+                    term: r.current_term,
+                    success: false,
+                }.reply(x.0),
+            )),
+            tick + 5,
+        );
+    }
+    r.append_log(random_log(), tick);
+    let x = r
+        .rpc
+        .rpc_log
+        .iter()
+        .enumerate()
+        .map(|x| match x.1 {
+            (2, RaftRPC::AppendEntries(xx)) => {
+                if xx.entries.len() != 0 && x.0 >= lst_scanned_idx {
+                    Some((x.0 as u64, xx))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .find(|x| x.is_some());
+    assert!(x.is_some());
+    let x = x.unwrap().unwrap();
+    assert!(x.1.prev_log_index <= 10);
+    std::thread::sleep(Duration::new(1, 0));
 }
 
 #[test]
 fn test_append_log() {
     let mut r = get_leader_instance();
     let entry = Get("23333".into());
-    r.append_log(entry.clone());
+    r.append_log(entry.clone(), 1000);
     assert!(inspect_has_append_entries_content_to(&r.rpc, &entry, 2));
     assert!(inspect_has_append_entries_content_to(&r.rpc, &entry, 3));
     assert!(inspect_has_append_entries_content_to(&r.rpc, &entry, 4));
     assert!(inspect_has_append_entries_content_to(&r.rpc, &entry, 5));
+}
+
+#[test]
+fn test_expire_rpc() {
+    let mut r = get_leader_instance();
+    r.append_log(random_log(), 1000);
+    r.tick(2000);
+    assert!(r.rpc_append_entries_log_idx.len() > 0);
+    let x = r.rpc_append_entries_log_idx.clone();
+    r.tick(1000000);
+    for (k, v) in x.iter() {
+        assert!(!r.rpc_append_entries_log_idx.contains_key(k));
+    }
 }

@@ -21,6 +21,7 @@ fn test_election_not_enough_vote() {
         r.on_event(
             RaftEvent::RPC((
                 2,
+                0,
                 RequestVoteReply {
                     term: 1,
                     vote_granted: true,
@@ -42,6 +43,7 @@ fn test_become_follower_append() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             AppendEntries {
                 term: r.current_term,
                 leader_id: 2,
@@ -65,6 +67,7 @@ fn test_become_follower_term() {
     r.on_event(
         RaftEvent::RPC((
             2,
+            0,
             AppendEntries {
                 term: r.current_term + 3,
                 leader_id: 2,
