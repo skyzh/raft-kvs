@@ -9,9 +9,9 @@ A distributed key-value store based on Raft.
     - [x] Candidate fallback
     - [x] Leader append log
     - [x] Follower verify log
-    - [ ] Leader sync log
+    - [x] Leader sync log
     - [ ] Batch append log
-    - [ ] Batch re-send log
+    - [ ] Batch rollback log
     - [ ] Membership changes (TBD)
     - [ ] Snapshot (TBD)
     - [ ] System test
