@@ -4,8 +4,8 @@ use std::collections::HashMap;
 pub mod utils;
 
 use raft_kvs::raft::log::Log::Get;
-use utils::*;
 use std::time::Duration;
+use utils::*;
 
 #[test]
 fn test_become_follower_term() {
@@ -24,7 +24,7 @@ fn test_become_follower_term() {
                 entries: vec![],
                 leader_commit: 200,
             }
-                .into(),
+            .into(),
         )),
         1005,
     );
@@ -69,7 +69,7 @@ fn test_sync_log() {
                     term: r.current_term,
                     success: true,
                 }
-                    .reply(x.0),
+                .reply(x.0),
             )),
             tick + 5,
         );
@@ -78,7 +78,6 @@ fn test_sync_log() {
         tick += 10;
     }
 }
-
 
 #[test]
 fn test_sync_log_not_match() {
@@ -113,7 +112,7 @@ fn test_sync_log_not_match() {
                     term: r.current_term,
                     success: true,
                 }
-                    .reply(x.0),
+                .reply(x.0),
             )),
             tick + 5,
         );
@@ -153,7 +152,8 @@ fn test_sync_log_not_match() {
                 AppendEntriesReply {
                     term: r.current_term,
                     success: false,
-                }.reply(x.0),
+                }
+                .reply(x.0),
             )),
             tick + 5,
         );
