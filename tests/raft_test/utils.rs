@@ -2,19 +2,25 @@ use lazy_static::lazy_static;
 use raft_kvs::raft::{event::*, instance::*, log::*, rpc::*};
 use slog::{info, o, Drain};
 use std::collections::HashMap;
+pub mod mockrpc;
+use mockrpc::{MockRPCService, MockRPCServiceWrapper};
+use std::sync::{Arc, Mutex};
 
 lazy_static! {
     static ref LOGGER: slog::Logger = {
-        let decorator = slog_term::TermDecorator::new().build();
-        let drain = slog_term::FullFormat::new(decorator).build().fuse();
-        let drain = slog_async::Async::new(drain).chan_size(1024).build().fuse();
-        let log = slog::Logger::root(drain, o!());
-        log
+        let plain = slog_term::PlainSyncDecorator::new(std::io::stdout());
+        let logger = slog::Logger::root(
+            slog_term::FullFormat::new(plain)
+            .build().fuse(), o!()
+        );
+        logger
     };
 }
 
-pub fn new_test_raft_instance() -> Raft {
-    Raft::new(vec![1, 2, 3, 4, 5], LOGGER.clone(), 1)
+pub fn new_test_raft_instance() -> (Raft, Arc<Mutex<MockRPCService>>) {
+    let rpc = Arc::new(Mutex::new(MockRPCService::new(LOGGER.clone(), 1)));
+    let rpc_wrapper = Box::new(MockRPCServiceWrapper::new(rpc.clone()));
+    (Raft::new(vec![1, 2, 3, 4, 5], LOGGER.clone(), rpc_wrapper, 1), rpc)
 }
 
 pub fn inspect_request_vote(rpc: &MockRPCService) -> HashMap<u64, u64> {
@@ -80,8 +86,8 @@ pub fn inspect_request_vote_reply(rpc: &MockRPCService) -> HashMap<u64, u64> {
             (
                 log_to,
                 RaftRPC::RequestVoteReply(RequestVoteReply {
-                    vote_granted: true, ..
-                }),
+                                              vote_granted: true, ..
+                                          }),
             ) => {
                 let log_to = *log_to;
                 match m.get_mut(&log_to) {
@@ -113,8 +119,8 @@ pub fn inspect_has_request_vote_reply_to(rpc: &MockRPCService, to: u64) -> bool 
     }
 }
 
-pub fn get_leader_instance() -> Raft {
-    let mut r = new_test_raft_instance();
+pub fn get_leader_instance() -> (Raft, Arc<Mutex<MockRPCService>>) {
+    let (mut r,  rpc) = new_test_raft_instance();
     r.tick(1000);
     // should have started election
     assert_eq!(r.role, Role::Candidate);
@@ -128,13 +134,13 @@ pub fn get_leader_instance() -> Raft {
                     term: 1,
                     vote_granted: true,
                 }
-                .into(),
+                    .into(),
             )),
             100 + i,
         );
     }
     assert_eq!(r.role, Role::Leader);
-    r
+    (r, rpc)
 }
 
 pub fn inspect_append_entries_content(rpc: &MockRPCService, find_log: &Log) -> HashMap<u64, ()> {

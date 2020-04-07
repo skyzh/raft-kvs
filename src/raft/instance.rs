@@ -2,9 +2,7 @@
 
 use crate::raft::event::RaftEvent;
 use crate::raft::log::Log;
-use crate::raft::rpc::{
-    AppendEntries, AppendEntriesReply, MockRPCService, RaftRPC, RequestVote, RequestVoteReply,
-};
+use crate::raft::rpc::{AppendEntries, AppendEntriesReply, RaftRPC, RequestVote, RequestVoteReply, RPCService};
 use rand::Rng;
 use slog::info;
 use std::collections::HashMap;
@@ -48,7 +46,7 @@ pub struct Raft {
 
     /// RPC service for Raft
     /// This is raft-kvs internal state.
-    pub rpc: MockRPCService,
+    pub rpc: Box<dyn RPCService>,
     /// role of Raft instance
     /// This is raft-kvs internal state.
     pub role: Role,
@@ -82,7 +80,7 @@ pub struct Raft {
 
 impl Raft {
     /// create new raft instance
-    pub fn new(known_peers: Vec<u64>, logger: slog::Logger, id: u64) -> Self {
+    pub fn new(known_peers: Vec<u64>, logger: slog::Logger, rpc: Box<dyn RPCService>, id: u64) -> Self {
         Raft {
             current_term: 0,
             voted_for: None,
@@ -91,7 +89,7 @@ impl Raft {
             last_applied: 0,
             next_index: HashMap::new(),
             match_index: HashMap::new(),
-            rpc: MockRPCService::new(logger.clone(), id),
+            rpc,
             role: Role::Follower,
             election_start_at: 0,
             election_timeout_at: 0,

@@ -17,3 +17,7 @@ slog-async = "2.4.0"
 
 [dev-dependencies]
 lazy_static = "1.4.0"
+slog-scope = "4.3.0"
+
+[[test]]
+name = "raft_test"

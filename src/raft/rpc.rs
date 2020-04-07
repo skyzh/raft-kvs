@@ -98,30 +98,9 @@ impl RaftRPC {
     }
 }
 
-/// A RPC Service for testing purpose
-pub struct MockRPCService {
-    /// RPC requests from client
-    pub rpc_log: Vec<(u64, RaftRPC)>,
-    /// Logger
-    log: slog::Logger,
-    /// instance id of Raft instance using this RPC service
-    instance_id: u64,
-}
-
-impl MockRPCService {
-    /// create new MockRPCService
-    pub fn new(logger: slog::Logger, instance_id: u64) -> Self {
-        Self {
-            rpc_log: vec![],
-            log: logger,
-            instance_id,
-        }
-    }
-
+/// RPC Service used by Raft instance
+pub trait RPCService {
     /// send `msg` to `peer`, returns RPC id for this request
-    pub fn send(&mut self, peer: u64, msg: RaftRPC) -> u64 {
-        info!(self.log, "send"; "msg" => format!("{:?}", msg));
-        self.rpc_log.push((peer, msg));
-        self.rpc_log.len() as u64 - 1
-    }
+    fn send(&mut self, peer: u64, msg: RaftRPC) -> u64;
 }
+

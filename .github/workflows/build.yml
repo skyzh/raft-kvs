@@ -4,15 +4,12 @@ name: build
 
 jobs:
   build_and_test:
-    name: Rust project
+    name: build and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --all-features
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --release --all-features
+      - name: build
+        run: cargo build --release --all-features
+      - name: test
+        run: cargo test --release --all-features
