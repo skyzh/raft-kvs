@@ -1,6 +1,6 @@
+use crate::utils::*;
 use raft_kvs::raft::{event::*, instance::*, log::*, rpc::*};
 use std::collections::HashMap;
-use crate::utils::*;
 
 #[test]
 fn test_become_candidate() {
@@ -157,7 +157,7 @@ fn test_append_log() {
 
 #[test]
 fn test_append_log_purge() {
-    let (mut r, rpc)= new_test_raft_instance();
+    let (mut r, rpc) = new_test_raft_instance();
     r.on_event(
         RaftEvent::RPC((
             2,

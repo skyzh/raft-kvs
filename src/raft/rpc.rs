@@ -99,8 +99,7 @@ impl RaftRPC {
 }
 
 /// RPC Service used by Raft instance
-pub trait RPCService : Send + Sync {
+pub trait RPCService: Send + Sync {
     /// send `msg` to `peer`, returns RPC id for this request
     fn send(&mut self, peer: u64, msg: RaftRPC) -> u64;
 }
-

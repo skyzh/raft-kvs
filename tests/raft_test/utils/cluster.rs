@@ -1,24 +1,23 @@
+use crate::system_utils::RaftSystem;
+use crate::utils::LOGGER;
+use lazy_static::lazy_static;
+use priority_queue::PriorityQueue;
+use raft_kvs::raft::event::RaftEvent;
+use raft_kvs::raft::event::RaftEvent::{Log, RPC};
 use raft_kvs::raft::instance::Raft;
 use raft_kvs::raft::rpc::{RPCService, RaftRPC};
-use std::sync::{Arc, Mutex};
-use crate::utils::LOGGER;
-use raft_kvs::raft::event::RaftEvent::{RPC, Log};
-use std::collections::HashMap;
+use slog::{info, o, trace, debug, Logger};
 use std::cmp::Reverse;
-use raft_kvs::raft::event::RaftEvent;
-use priority_queue::PriorityQueue;
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
-use lazy_static::lazy_static;
-use std::time::Instant;
-use std::thread;
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::thread::JoinHandle;
-use slog::{Logger, info, trace, o};
+use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 lazy_static! {
-    static ref global_time: Instant = {
-        Instant::now()
-    };
+    static ref global_time: Instant = { Instant::now() };
 }
 
 pub fn now() -> u64 {
@@ -35,7 +34,13 @@ pub struct RPCNetwork {
 
 impl RPCNetwork {
     pub fn new(log: slog::Logger) -> Self {
-        Self { msg_queue: PriorityQueue::new(), disabled: HashMap::new(), msg: HashMap::new(), total_msg_id: 0, log }
+        Self {
+            msg_queue: PriorityQueue::new(),
+            disabled: HashMap::new(),
+            msg: HashMap::new(),
+            total_msg_id: 0,
+            log,
+        }
     }
 
     pub fn deliver(&mut self, from: u64, msg_id: u64, to: u64, msg: RaftRPC) {
@@ -48,15 +53,17 @@ impl RPCNetwork {
         self.total_msg_id += 1;
     }
 
-    pub fn enable(&mut self, id: u64) {
+    pub fn disable(&mut self, id: u64) {
         self.disabled.insert(id, ());
     }
 
-    pub fn disable(&mut self, id: u64) {
+    pub fn enable(&mut self, id: u64) {
         self.disabled.remove(&id);
     }
 
-    pub fn disabled(&self, id: u64) -> bool { self.disabled.contains_key(&id) }
+    pub fn disabled(&self, id: u64) -> bool {
+        self.disabled.contains_key(&id)
+    }
 
     pub fn process(&mut self) -> Vec<(u64, u64, u64, RaftRPC)> {
         let time: u64 = now();
@@ -64,15 +71,17 @@ impl RPCNetwork {
         loop {
             let result = match self.msg_queue.peek() {
                 Some((_, x)) => x.0 <= time,
-                None => false
+                None => false,
             };
 
             if result {
                 let e = self.msg_queue.pop().unwrap().0;
                 let e = self.msg.remove(&e).unwrap();
                 if !self.disabled(e.2) {
-                    trace!(self.log, "rpc message"; "from" => e.0, "to" => e.2, "seq" => e.1, "msg" => format!("{:?}", e.3));
+                    debug!(self.log, "rpc message"; "from" => e.0, "to" => e.2, "seq" => e.1, "msg" => format!("{:?}", e.3));
                     q.push(e);
+                } else {
+                    debug!(self.log, "rpc message (dropped)"; "from" => e.0, "to" => e.2, "seq" => e.1, "msg" => format!("{:?}", e.3));
                 }
             } else {
                 break;
@@ -125,7 +134,10 @@ impl RPCService for RPCClient {
     }
 }
 
-pub fn with_cluster<F>(number: usize, func: F) where F: FnOnce(Vec<Arc<Mutex<Raft>>>, Arc<Mutex<RPCNetwork>>) {
+pub fn with_cluster<F>(number: usize, func: F)
+    where
+        F: FnOnce(RaftSystem),
+{
     let mut raft_instance = vec![];
     let known_peers: Vec<u64> = (0..number).map(|x| x as u64).collect();
     let network = Arc::new(Mutex::new(RPCNetwork::new(LOGGER.clone())));
@@ -133,14 +145,25 @@ pub fn with_cluster<F>(number: usize, func: F) where F: FnOnce(Vec<Arc<Mutex<Raf
         let id = id as u64;
         let rpc = Box::new(RPCClient::new(network.clone(), id));
         let logger = LOGGER.new(o!("id" => id));
-        let instance = Arc::new(Mutex::new(Raft::new(known_peers.clone(), logger, rpc, id, now())));
+        let instance = Arc::new(Mutex::new(Raft::new(
+            known_peers.clone(),
+            logger,
+            rpc,
+            id,
+            now(),
+        )));
         raft_instance.push(instance);
     }
-    func(raft_instance, network);
+    let system = RaftSystem::new(raft_instance, network, LOGGER.clone());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let handles = spawn_cluster(&system.cluster, system.network.clone(), cancel.clone());
+    func(system);
+    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(handles);
 }
 
 pub struct ClusterHandles {
-    handles: Vec<Option<JoinHandle<()>>>
+    handles: Vec<Option<JoinHandle<()>>>,
 }
 
 impl ClusterHandles {
@@ -158,31 +181,35 @@ impl Drop for ClusterHandles {
     }
 }
 
-pub fn spawn_cluster(cluster: &Vec<Arc<Mutex<Raft>>>, network: Arc<Mutex<RPCNetwork>>, cancel: Arc<AtomicBool>) -> ClusterHandles {
-    let mut x: Vec<Option<JoinHandle<()>>> = cluster.iter().map(|instance| {
-        let cancel = cancel.clone();
-        let instance = instance.clone();
-        thread::spawn(move || {
-            loop {
+pub fn spawn_cluster(
+    cluster: &Vec<Arc<Mutex<Raft>>>,
+    network: Arc<Mutex<RPCNetwork>>,
+    cancel: Arc<AtomicBool>,
+) -> ClusterHandles {
+    let mut x: Vec<Option<JoinHandle<()>>> = cluster
+        .iter()
+        .map(|instance| {
+            let cancel = cancel.clone();
+            let instance = instance.clone();
+            thread::spawn(move || loop {
                 if cancel.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
                 instance.lock().unwrap().tick(now());
                 thread::sleep(Duration::from_millis(10));
-            }
+            })
         })
-    }).map(|x| Some(x)).collect();
+        .map(|x| Some(x))
+        .collect();
     let cancel = cancel.clone();
     let network = network.clone();
     let mut cluster = cluster.clone();
-    x.push(Some(thread::spawn(move || {
-        loop {
-            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-                break;
-            }
-            deliver_all_message(&mut cluster, network.clone());
-            thread::yield_now();
+    x.push(Some(thread::spawn(move || loop {
+        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
         }
+        deliver_all_message(&mut cluster, network.clone());
+        thread::yield_now();
     })));
     ClusterHandles::new(x)
 }

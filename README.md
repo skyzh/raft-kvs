@@ -1,5 +1,7 @@
 # raft-kvs
 
+![build](https://github.com/skyzh/raft-kvs/workflows/build/badge.svg)
+
 A distributed key-value store based on Raft.
 
 ## Roadmap
@@ -10,6 +12,10 @@ A distributed key-value store based on Raft.
     - [x] Leader append log
     - [x] Follower verify log
     - [x] Leader sync log
+    - [ ] Migrate test from 6.824
+        - [x] 2A
+        - [ ] 2B
+        - [ ] 2C
     - [ ] Batch append log
     - [ ] Batch rollback log
     - [ ] Membership changes (TBD)
@@ -19,6 +25,5 @@ A distributed key-value store based on Raft.
     - [ ] Config
     - [ ] Provide abstraction for application
     - [ ] Migrate test from skyzh/raft
-    - [ ] Migrate test from 6.824
 - Implement KVS
     - [ ] Migrate test from 6.824

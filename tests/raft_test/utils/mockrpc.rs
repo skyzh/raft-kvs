@@ -1,7 +1,7 @@
 use raft_kvs::raft::rpc::*;
+use slog::info;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use slog::info;
 
 /// A RPC Service for testing purpose
 pub struct MockRPCService {
@@ -33,7 +33,7 @@ impl RPCService for MockRPCService {
 }
 
 pub struct MockRPCServiceWrapper {
-    rpc: Arc<Mutex<MockRPCService>>
+    rpc: Arc<Mutex<MockRPCService>>,
 }
 
 impl MockRPCServiceWrapper {

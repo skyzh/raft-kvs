@@ -10,10 +10,7 @@ pub mod cluster;
 lazy_static! {
     static ref LOGGER: slog::Logger = {
         let plain = slog_term::PlainSyncDecorator::new(std::io::stdout());
-        let logger = slog::Logger::root(
-            slog_term::FullFormat::new(plain)
-            .build().fuse(), o!()
-        );
+        let logger = slog::Logger::root(slog_term::FullFormat::new(plain).build().fuse(), o!());
         logger
     };
 }
@@ -21,7 +18,10 @@ lazy_static! {
 pub fn new_test_raft_instance() -> (Raft, Arc<Mutex<MockRPCService>>) {
     let rpc = Arc::new(Mutex::new(MockRPCService::new(LOGGER.clone(), 1)));
     let rpc_wrapper = Box::new(MockRPCServiceWrapper::new(rpc.clone()));
-    (Raft::new(vec![1, 2, 3, 4, 5], LOGGER.clone(), rpc_wrapper, 1, 0), rpc)
+    (
+        Raft::new(vec![1, 2, 3, 4, 5], LOGGER.clone(), rpc_wrapper, 1, 0),
+        rpc,
+    )
 }
 
 pub fn inspect_request_vote(rpc: &MockRPCService) -> HashMap<u64, u64> {
@@ -87,8 +87,8 @@ pub fn inspect_request_vote_reply(rpc: &MockRPCService) -> HashMap<u64, u64> {
             (
                 log_to,
                 RaftRPC::RequestVoteReply(RequestVoteReply {
-                                              vote_granted: true, ..
-                                          }),
+                    vote_granted: true, ..
+                }),
             ) => {
                 let log_to = *log_to;
                 match m.get_mut(&log_to) {
@@ -121,7 +121,7 @@ pub fn inspect_has_request_vote_reply_to(rpc: &MockRPCService, to: u64) -> bool 
 }
 
 pub fn get_leader_instance() -> (Raft, Arc<Mutex<MockRPCService>>) {
-    let (mut r,  rpc) = new_test_raft_instance();
+    let (mut r, rpc) = new_test_raft_instance();
     r.tick(1000);
     // should have started election
     assert_eq!(r.role, Role::Candidate);
@@ -135,7 +135,7 @@ pub fn get_leader_instance() -> (Raft, Arc<Mutex<MockRPCService>>) {
                     term: 1,
                     vote_granted: true,
                 }
-                    .into(),
+                .into(),
             )),
             100 + i,
         );

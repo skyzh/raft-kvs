@@ -22,7 +22,7 @@ fn test_become_follower_term() {
                 entries: vec![],
                 leader_commit: 200,
             }
-                .into(),
+            .into(),
         )),
         1005,
     );
@@ -70,7 +70,7 @@ fn test_sync_log() {
                     term: r.current_term,
                     success: true,
                 }
-                    .reply(reply_id),
+                .reply(reply_id),
             )),
             tick + 5,
         );
@@ -116,7 +116,7 @@ fn test_sync_log_not_match() {
                     term: r.current_term,
                     success: true,
                 }
-                    .reply(reply_id),
+                .reply(reply_id),
             )),
             tick + 5,
         );
@@ -131,23 +131,21 @@ fn test_sync_log_not_match() {
         r.append_log(random_log(), tick);
         let reply_id = {
             let rpc = rpc.lock().unwrap();
-            let x =
-
-                rpc
-                    .rpc_log
-                    .iter()
-                    .enumerate()
-                    .map(|x| match x.1 {
-                        (2, RaftRPC::AppendEntries(xx)) => {
-                            if xx.entries.len() != 0 && x.0 >= lst_scanned_idx {
-                                Some((x.0 as u64, xx))
-                            } else {
-                                None
-                            }
+            let x = rpc
+                .rpc_log
+                .iter()
+                .enumerate()
+                .map(|x| match x.1 {
+                    (2, RaftRPC::AppendEntries(xx)) => {
+                        if xx.entries.len() != 0 && x.0 >= lst_scanned_idx {
+                            Some((x.0 as u64, xx))
+                        } else {
+                            None
                         }
-                        _ => None,
-                    })
-                    .find(|x| x.is_some());
+                    }
+                    _ => None,
+                })
+                .find(|x| x.is_some());
             assert!(x.is_some());
             let x = x.unwrap().unwrap();
             lst_scanned_idx = rpc.rpc_log.len();
@@ -162,7 +160,7 @@ fn test_sync_log_not_match() {
                     term: r.current_term,
                     success: false,
                 }
-                    .reply(reply_id),
+                .reply(reply_id),
             )),
             tick + 5,
         );
@@ -170,21 +168,21 @@ fn test_sync_log_not_match() {
     r.append_log(random_log(), tick);
     {
         let rpc = rpc.lock().unwrap();
-        let x =
-            rpc.rpc_log
-                .iter()
-                .enumerate()
-                .map(|x| match x.1 {
-                    (2, RaftRPC::AppendEntries(xx)) => {
-                        if xx.entries.len() != 0 && x.0 >= lst_scanned_idx {
-                            Some((x.0 as u64, xx))
-                        } else {
-                            None
-                        }
+        let x = rpc
+            .rpc_log
+            .iter()
+            .enumerate()
+            .map(|x| match x.1 {
+                (2, RaftRPC::AppendEntries(xx)) => {
+                    if xx.entries.len() != 0 && x.0 >= lst_scanned_idx {
+                        Some((x.0 as u64, xx))
+                    } else {
+                        None
                     }
-                    _ => None,
-                })
-                .find(|x| x.is_some());
+                }
+                _ => None,
+            })
+            .find(|x| x.is_some());
         assert!(x.is_some());
         let x = x.unwrap().unwrap();
         assert!(x.1.prev_log_index <= 10);
@@ -196,10 +194,26 @@ fn test_append_log() {
     let (mut r, rpc) = get_leader_instance();
     let entry = Get("23333".into());
     r.append_log(entry.clone(), 1000);
-    assert!(inspect_has_append_entries_content_to(&rpc.lock().unwrap(), &entry, 2));
-    assert!(inspect_has_append_entries_content_to(&rpc.lock().unwrap(), &entry, 3));
-    assert!(inspect_has_append_entries_content_to(&rpc.lock().unwrap(), &entry, 4));
-    assert!(inspect_has_append_entries_content_to(&rpc.lock().unwrap(), &entry, 5));
+    assert!(inspect_has_append_entries_content_to(
+        &rpc.lock().unwrap(),
+        &entry,
+        2
+    ));
+    assert!(inspect_has_append_entries_content_to(
+        &rpc.lock().unwrap(),
+        &entry,
+        3
+    ));
+    assert!(inspect_has_append_entries_content_to(
+        &rpc.lock().unwrap(),
+        &entry,
+        4
+    ));
+    assert!(inspect_has_append_entries_content_to(
+        &rpc.lock().unwrap(),
+        &entry,
+        5
+    ));
 }
 
 #[test]

@@ -2,7 +2,9 @@
 
 use crate::raft::event::RaftEvent;
 use crate::raft::log::Log;
-use crate::raft::rpc::{AppendEntries, AppendEntriesReply, RaftRPC, RequestVote, RequestVoteReply, RPCService};
+use crate::raft::rpc::{
+    AppendEntries, AppendEntriesReply, RPCService, RaftRPC, RequestVote, RequestVoteReply,
+};
 use rand::Rng;
 use slog::{info, trace};
 use std::collections::HashMap;
@@ -80,7 +82,13 @@ pub struct Raft {
 
 impl Raft {
     /// create new raft instance
-    pub fn new(known_peers: Vec<u64>, logger: slog::Logger, rpc: Box<dyn RPCService>, id: u64, current_tick: u64) -> Self {
+    pub fn new(
+        known_peers: Vec<u64>,
+        logger: slog::Logger,
+        rpc: Box<dyn RPCService>,
+        id: u64,
+        current_tick: u64,
+    ) -> Self {
         let mut instance = Raft {
             current_term: 0,
             voted_for: None,
@@ -116,7 +124,7 @@ impl Raft {
             Role::Candidate => {
                 // restart election if there's not enough vote and there's no leader
                 if current_tick > self.election_timeout_at {
-                    self.begin_election(current_tick);
+                    self.become_candidate(current_tick);
                 }
             }
             Role::Leader => {
@@ -193,6 +201,7 @@ impl Raft {
     fn become_follower(&mut self, current_tick: u64) {
         info!(self.logger, "role transition"; "role" => format!("{:?}->{:?}", self.role, Role::Follower));
         self.role = Role::Follower;
+        self.voted_for = None;
         self.election_start_at = current_tick + Self::tick_election_start_at();
     }
 
@@ -314,6 +323,7 @@ impl Raft {
                 if vote_granted {
                     self.voted_for = Some(request.candidate_id);
                 }
+                self.election_start_at = current_tick + Self::tick_election_start_at();
                 self.rpc.send(
                     from,
                     RequestVoteReply {
@@ -410,11 +420,11 @@ impl Raft {
 
     /// generate random election timeout
     fn tick_election_fail_at() -> u64 {
-        rand::thread_rng().gen_range(100, 300)
+        rand::thread_rng().gen_range(150, 300)
     }
 
     /// generate random election start
     fn tick_election_start_at() -> u64 {
-        rand::thread_rng().gen_range(100, 300)
+        rand::thread_rng().gen_range(150, 300)
     }
 }
