@@ -5,6 +5,7 @@ use std::collections::HashMap;
 pub mod mockrpc;
 use mockrpc::{MockRPCService, MockRPCServiceWrapper};
 use std::sync::{Arc, Mutex};
+pub mod cluster;
 
 lazy_static! {
     static ref LOGGER: slog::Logger = {
@@ -20,7 +21,7 @@ lazy_static! {
 pub fn new_test_raft_instance() -> (Raft, Arc<Mutex<MockRPCService>>) {
     let rpc = Arc::new(Mutex::new(MockRPCService::new(LOGGER.clone(), 1)));
     let rpc_wrapper = Box::new(MockRPCServiceWrapper::new(rpc.clone()));
-    (Raft::new(vec![1, 2, 3, 4, 5], LOGGER.clone(), rpc_wrapper, 1), rpc)
+    (Raft::new(vec![1, 2, 3, 4, 5], LOGGER.clone(), rpc_wrapper, 1, 0), rpc)
 }
 
 pub fn inspect_request_vote(rpc: &MockRPCService) -> HashMap<u64, u64> {
