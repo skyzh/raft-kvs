@@ -1,7 +1,6 @@
 //! Define RPC calls and RPC service for Raft
 
 use crate::raft::log::Log;
-use slog::info;
 
 /// AppendEntries RPC
 #[derive(Debug)]

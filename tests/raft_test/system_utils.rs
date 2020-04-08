@@ -1,19 +1,23 @@
+use crate::utils::cluster::RPCNetwork;
 use raft_kvs::raft::instance::{Raft, Role};
+use slog::info;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use crate::utils::cluster::RPCNetwork;
 use std::time::Duration;
-use slog::info;
 
 pub struct RaftSystem {
     pub cluster: Vec<Arc<Mutex<Raft>>>,
     pub network: Arc<Mutex<RPCNetwork>>,
     disconnected: HashSet<u64>,
-    log: slog::Logger
+    log: slog::Logger,
 }
 
 impl RaftSystem {
-    pub fn new(cluster: Vec<Arc<Mutex<Raft>>>, network: Arc<Mutex<RPCNetwork>>, log: slog::Logger) -> Self {
+    pub fn new(
+        cluster: Vec<Arc<Mutex<Raft>>>,
+        network: Arc<Mutex<RPCNetwork>>,
+        log: slog::Logger,
+    ) -> Self {
         Self {
             cluster,
             network,

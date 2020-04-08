@@ -1,5 +1,5 @@
 use raft_kvs::raft::rpc::*;
-use slog::info;
+use slog::{debug, info};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
@@ -26,7 +26,7 @@ impl MockRPCService {
 
 impl RPCService for MockRPCService {
     fn send(&mut self, peer: u64, msg: RaftRPC) -> u64 {
-        info!(self.log, "send"; "msg" => format!("{:?}", msg));
+        debug!(self.log, "send"; "msg" => format!("{:?}", msg));
         self.rpc_log.push((peer, msg));
         self.rpc_log.len() as u64 - 1
     }

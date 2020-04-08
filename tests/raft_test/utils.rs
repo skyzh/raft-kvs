@@ -6,11 +6,15 @@ pub mod mockrpc;
 use mockrpc::{MockRPCService, MockRPCServiceWrapper};
 use std::sync::{Arc, Mutex};
 pub mod cluster;
+use std::panic;
+use std::process;
 
 lazy_static! {
     static ref LOGGER: slog::Logger = {
         let plain = slog_term::PlainSyncDecorator::new(std::io::stdout());
-        let logger = slog::Logger::root(slog_term::FullFormat::new(plain).build().fuse(), o!());
+        let drain = slog_term::FullFormat::new(plain).build();
+        let drain = slog::LevelFilter::new(drain, slog::Level::Info).fuse();
+        let logger = slog::Logger::root(drain, o!());
         logger
     };
 }

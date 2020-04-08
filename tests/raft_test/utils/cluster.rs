@@ -6,9 +6,10 @@ use raft_kvs::raft::event::RaftEvent;
 use raft_kvs::raft::event::RaftEvent::{Log, RPC};
 use raft_kvs::raft::instance::Raft;
 use raft_kvs::raft::rpc::{RPCService, RaftRPC};
-use slog::{info, o, trace, debug, Logger};
+use slog::{debug, info, o, trace, Logger};
 use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::panic;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -135,8 +136,8 @@ impl RPCService for RPCClient {
 }
 
 pub fn with_cluster<F>(number: usize, func: F)
-    where
-        F: FnOnce(RaftSystem),
+where
+    F: FnOnce(RaftSystem) + std::marker::Send + 'static,
 {
     let mut raft_instance = vec![];
     let known_peers: Vec<u64> = (0..number).map(|x| x as u64).collect();
@@ -157,7 +158,7 @@ pub fn with_cluster<F>(number: usize, func: F)
     let system = RaftSystem::new(raft_instance, network, LOGGER.clone());
     let cancel = Arc::new(AtomicBool::new(false));
     let handles = spawn_cluster(&system.cluster, system.network.clone(), cancel.clone());
-    func(system);
+    thread::spawn(move || func(system)).join().ok();
     cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     drop(handles);
 }

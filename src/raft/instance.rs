@@ -277,7 +277,7 @@ impl Raft {
     }
 
     /// candidate rpc event
-    fn candidate_rpc_event(&mut self, from: u64, msg_id: u64, event: RaftRPC, current_tick: u64) {
+    fn candidate_rpc_event(&mut self, from: u64, _msg_id: u64, event: RaftRPC, current_tick: u64) {
         match event {
             RaftRPC::RequestVoteReply(reply) => {
                 if reply.vote_granted {
@@ -312,14 +312,13 @@ impl Raft {
                     );
                     return;
                 }
-                let mut vote_granted = match self.voted_for {
+                let vote_granted = match self.voted_for {
                     Some(candidate_id) => candidate_id == request.candidate_id,
-                    None => true,
+                    None => {
+                        // TODO: how to check up-to-date?
+                        request.last_log_index >= self.last_log_index()
+                    }
                 };
-                // TODO: how to check up-to-date?
-                if request.last_log_index < self.last_log_index() {
-                    vote_granted = false;
-                }
                 if vote_granted {
                     self.voted_for = Some(request.candidate_id);
                 }
@@ -342,13 +341,12 @@ impl Raft {
                     info!(self.logger, "append entries failed"; "reason" => "lower term");
                 } else if request.prev_log_index > self.last_log_index() {
                     info!(self.logger, "append entries failed"; "reason" => "log not found");
+                } else if self.log_term_of(request.prev_log_index) == request.prev_log_term {
+                    ok = true;
                 } else {
-                    if self.log_term_of(request.prev_log_index) == request.prev_log_term {
-                        ok = true;
-                    } else {
-                        info!(self.logger, "append entries failed"; "reason" => "term not match");
-                    }
+                    info!(self.logger, "append entries failed"; "reason" => "term not match");
                 }
+
                 if ok {
                     let length = request.entries.len();
                     self.log.drain(request.prev_log_index as usize..);
@@ -367,25 +365,22 @@ impl Raft {
     }
 
     /// leader rpc event
-    fn leader_rpc_event(&mut self, from: u64, msg_id: u64, event: RaftRPC, current_tick: u64) {
-        match event {
-            RaftRPC::AppendEntriesReply(reply_to, response) => {
-                let prev_match_index = self.rpc_append_entries_log_idx.get(&reply_to);
-                if prev_match_index.is_none() {
-                    return;
-                }
-                let prev_match_index = prev_match_index.unwrap().0;
-                self.rpc_append_entries_log_idx.remove(&reply_to);
-                if response.success {
-                    *self.match_index.get_mut(&from).unwrap() = prev_match_index + 1;
-                    *self.next_index.get_mut(&from).unwrap() = prev_match_index + 2;
-                } else {
-                    *self.next_index.get_mut(&from).unwrap() = prev_match_index;
-                    info!(self.logger, "append failed";
-                            "prev_match_index" => prev_match_index, "from" => from);
-                }
+    fn leader_rpc_event(&mut self, from: u64, _msg_id: u64, event: RaftRPC, _current_tick: u64) {
+        if let RaftRPC::AppendEntriesReply(reply_to, response) = event {
+            let prev_match_index = self.rpc_append_entries_log_idx.get(&reply_to);
+            if prev_match_index.is_none() {
+                return;
             }
-            _ => {}
+            let prev_match_index = prev_match_index.unwrap().0;
+            self.rpc_append_entries_log_idx.remove(&reply_to);
+            if response.success {
+                *self.match_index.get_mut(&from).unwrap() = prev_match_index + 1;
+                *self.next_index.get_mut(&from).unwrap() = prev_match_index + 2;
+            } else {
+                *self.next_index.get_mut(&from).unwrap() = prev_match_index;
+                info!(self.logger, "append failed";
+                            "prev_match_index" => prev_match_index, "from" => from);
+            }
         }
     }
 
