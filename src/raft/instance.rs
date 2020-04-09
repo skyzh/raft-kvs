@@ -349,8 +349,14 @@ impl Raft {
 
                 if ok {
                     let length = request.entries.len();
-                    self.log.drain(request.prev_log_index as usize..);
-                    self.log.extend(request.entries);
+                    for (idx, log) in request.entries.into_iter().enumerate() {
+                        let log_idx = request.prev_log_index as usize + idx;
+                        if log_idx < self.log.len() {
+                            self.log[log_idx] = log;
+                        } else {
+                            self.log.push(log);
+                        }
+                    }
                     trace!(self.logger, "append entries success";
                             "entries_processed" => length,
                             "log_length" => self.log.len());

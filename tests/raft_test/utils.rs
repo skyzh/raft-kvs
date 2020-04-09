@@ -6,6 +6,7 @@ pub mod mockrpc;
 use mockrpc::{MockRPCService, MockRPCServiceWrapper};
 use std::sync::{Arc, Mutex};
 pub mod cluster;
+pub mod rpcnetwork;
 use std::panic;
 use std::process;
 

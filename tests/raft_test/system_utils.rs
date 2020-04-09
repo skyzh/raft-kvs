@@ -1,4 +1,4 @@
-use crate::utils::cluster::RPCNetwork;
+use crate::utils::rpcnetwork::RPCNetwork;
 use raft_kvs::raft::instance::{Raft, Role};
 use slog::info;
 use std::collections::HashSet;
