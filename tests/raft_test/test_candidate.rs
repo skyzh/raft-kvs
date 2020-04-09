@@ -95,3 +95,10 @@ fn test_restart_election() {
     assert_eq!(inspect_request_vote_to(&rpc.lock().unwrap(), 4), 2);
     assert_eq!(inspect_request_vote_to(&rpc.lock().unwrap(), 5), 2);
 }
+
+
+#[test]
+fn test_no_append() {
+    let (mut r, rpc) = new_test_raft_instance();
+    assert_eq!(r.append_log(random_log(), 100), None);
+}

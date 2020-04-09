@@ -216,3 +216,9 @@ fn test_reject_log_term_id() {
     );
     assert_eq!(r.log.len(), 0);
 }
+
+#[test]
+fn test_no_append() {
+    let (mut r, rpc) = new_test_raft_instance();
+    assert_eq!(r.append_log(random_log(), 100), None);
+}

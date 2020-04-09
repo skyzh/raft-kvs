@@ -424,23 +424,21 @@ impl Raft {
     }
 
     /// append log
-    /// returns lease of log append request
-    pub fn append_log(&mut self, log: Log, current_tick: u64) -> u64 {
+    /// returns (term, idx) if is leader
+    pub fn append_log(&mut self, log: Log, current_tick: u64) -> Option<(i64, i64)> {
+        if self.role != Role::Leader {
+            return None;
+        }
         self.log.push((self.current_term, log));
+        let term = self.last_log_term();
+        let idx = self.last_log_index();
         for peer in self.known_peers.clone().iter() {
             let peer = *peer;
             if peer != self.id {
                 self.sync_log_with(peer, current_tick);
             }
         }
-        0
-    }
-
-    /// check append log
-    /// returns None if cannot append
-    /// returns Some((term, index)) if successfully appended
-    pub fn append_log_result(&mut self, lease: u64) -> Option<(i64, u64)> {
-        None
+        return Some((term, idx));
     }
 
     /// generate random election timeout
