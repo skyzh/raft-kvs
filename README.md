@@ -16,7 +16,7 @@ A distributed key-value store based on Raft.
         - [x] 2A
         - [ ] 2B
         - [ ] 2C
-    - [ ] Batch append log
+    - [x] Batch append log
     - [ ] Batch rollback log
     - [ ] Membership changes (TBD)
     - [ ] Snapshot (TBD)

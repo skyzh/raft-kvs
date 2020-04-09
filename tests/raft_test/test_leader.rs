@@ -22,7 +22,7 @@ fn test_become_follower_term() {
                 entries: vec![],
                 leader_commit: 200,
             }
-            .into(),
+                .into(),
         )),
         1005,
     );
@@ -70,7 +70,7 @@ fn test_sync_log() {
                     term: r.current_term,
                     success: true,
                 }
-                .reply(reply_id),
+                    .reply(reply_id),
             )),
             tick + 5,
         );
@@ -116,7 +116,7 @@ fn test_sync_log_not_match() {
                     term: r.current_term,
                     success: true,
                 }
-                .reply(reply_id),
+                    .reply(reply_id),
             )),
             tick + 5,
         );
@@ -160,7 +160,7 @@ fn test_sync_log_not_match() {
                     term: r.current_term,
                     success: false,
                 }
-                .reply(reply_id),
+                    .reply(reply_id),
             )),
             tick + 5,
         );
@@ -197,22 +197,22 @@ fn test_append_log() {
     assert!(inspect_has_append_entries_content_to(
         &rpc.lock().unwrap(),
         &entry,
-        2
+        2,
     ));
     assert!(inspect_has_append_entries_content_to(
         &rpc.lock().unwrap(),
         &entry,
-        3
+        3,
     ));
     assert!(inspect_has_append_entries_content_to(
         &rpc.lock().unwrap(),
         &entry,
-        4
+        4,
     ));
     assert!(inspect_has_append_entries_content_to(
         &rpc.lock().unwrap(),
         &entry,
-        5
+        5,
     ));
 }
 
@@ -227,4 +227,46 @@ fn test_expire_rpc() {
     for (k, v) in x.iter() {
         assert!(!r.rpc_append_entries_log_idx.contains_key(k));
     }
+}
+
+#[test]
+fn test_commit() {
+    let (mut r, rpc) = get_leader_instance();
+    assert_eq!(r.match_index.len(), 4);
+    r.match_index.insert(2, 100);
+    r.match_index.insert(3, 100);
+    for i in 0..100 { r.append_log(random_log(), i); }
+    r.tick(200);
+    let msg_id = {
+        let rpc = rpc.lock().unwrap();
+        let x = rpc.rpc_log
+            .iter()
+            .enumerate()
+            .map(|x| match x.1 {
+                (2, RaftRPC::AppendEntries(xx)) => {
+                    if xx.entries.len() == 100 {
+                        Some((x.0 as u64, xx))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .find(|x| x.is_some());
+        assert!(x.is_some());
+        x.unwrap().unwrap().0
+    };
+    r.on_event(
+        RaftEvent::RPC((
+            2,
+            0,
+            AppendEntriesReply {
+                term: r.current_term,
+                success: true,
+            }
+                .reply(msg_id),
+        )),
+        300
+    );
+    assert_eq!(r.commit_index, 100);
 }

@@ -73,7 +73,7 @@ pub struct Raft {
 
     /// used to pair RPC request with RPC response. Will be periodically cleared.
     /// This is a raft-kvs internal state.
-    pub rpc_append_entries_log_idx: HashMap<u64, (i64, u64)>,
+    pub rpc_append_entries_log_idx: HashMap<u64, (i64, u64, u64)>,
 
     /// logger
     /// This is raft-kvs internal state.
@@ -138,10 +138,10 @@ impl Raft {
     /// update RPC request-response pairing cache
     fn update_rpc_cache(&mut self, current_tick: u64) {
         let expired = std::mem::replace(&mut self.rpc_append_entries_log_idx, HashMap::new());
-        for (req, (idx, timestamp)) in expired.into_iter() {
+        for (req, (idx, timestamp, length)) in expired.into_iter() {
             if timestamp + 10000 >= current_tick {
                 self.rpc_append_entries_log_idx
-                    .insert(req, (idx, timestamp));
+                    .insert(req, (idx, timestamp, length));
             }
         }
     }
@@ -169,7 +169,7 @@ impl Raft {
                 entries,
                 leader_commit: self.commit_index,
             }
-            .into(),
+                .into(),
         );
     }
 
@@ -181,6 +181,9 @@ impl Raft {
             return;
         }
         let prev_log_index = next_idx - 1;
+        // TODO: limit maximum entries
+        let entries: Vec<(i64, Log)> = self.log[next_idx as usize - 1..].iter().map(|x| x.clone()).collect();
+        let entries_length = entries.len();
         let rpc_id = self.rpc.send(
             peer,
             AppendEntries {
@@ -188,13 +191,13 @@ impl Raft {
                 leader_id: self.id,
                 prev_log_term: self.log_term_of(next_idx - 1),
                 prev_log_index,
-                entries: vec![self.log[next_idx as usize - 1].clone()],
+                entries,
                 leader_commit: self.commit_index,
             }
-            .into(),
+                .into(),
         );
         self.rpc_append_entries_log_idx
-            .insert(rpc_id, (prev_log_index, current_tick));
+            .insert(rpc_id, (prev_log_index, current_tick, entries_length as u64));
     }
 
     /// become a follower
@@ -249,7 +252,7 @@ impl Raft {
                         last_log_index: self.last_log_index(),
                         last_log_term: self.last_log_term(),
                     }
-                    .into(),
+                        .into(),
                 );
             }
         }
@@ -308,7 +311,7 @@ impl Raft {
                             term: self.current_term,
                             vote_granted: false,
                         }
-                        .into(),
+                            .into(),
                     );
                     return;
                 }
@@ -329,7 +332,7 @@ impl Raft {
                         term: self.current_term,
                         vote_granted,
                     }
-                    .into(),
+                        .into(),
                 );
             }
             RaftRPC::AppendEntries(request) => {
@@ -377,17 +380,29 @@ impl Raft {
             if prev_match_index.is_none() {
                 return;
             }
-            let prev_match_index = prev_match_index.unwrap().0;
+            let (prev_match_index, _, length) = prev_match_index.unwrap();
+            let length = *length as i64;
+            let prev_match_index = *prev_match_index;
             self.rpc_append_entries_log_idx.remove(&reply_to);
             if response.success {
-                *self.match_index.get_mut(&from).unwrap() = prev_match_index + 1;
-                *self.next_index.get_mut(&from).unwrap() = prev_match_index + 2;
+                *self.match_index.get_mut(&from).unwrap() = prev_match_index + length;
+                *self.next_index.get_mut(&from).unwrap() = prev_match_index + length + 1;
+                self.try_commit();
             } else {
                 *self.next_index.get_mut(&from).unwrap() = prev_match_index;
                 info!(self.logger, "append failed";
                             "prev_match_index" => prev_match_index, "from" => from);
             }
         }
+    }
+
+    /// commit log if agree by majority of followers
+    fn try_commit(&mut self) {
+        let mut latest_match: Vec<i64> = self.match_index.iter().map(|x| *x.1).collect();
+        latest_match.push(self.last_log_index());
+        latest_match.sort();
+        let commit_idx = latest_match[self.known_peers.len() / 2]; // 4 -> 2, 5 -> 2
+        self.commit_index = commit_idx;
     }
 
     /// process Raft event
@@ -409,7 +424,8 @@ impl Raft {
     }
 
     /// append log
-    pub fn append_log(&mut self, log: Log, current_tick: u64) {
+    /// returns lease of log append request
+    pub fn append_log(&mut self, log: Log, current_tick: u64) -> u64 {
         self.log.push((self.current_term, log));
         for peer in self.known_peers.clone().iter() {
             let peer = *peer;
@@ -417,6 +433,14 @@ impl Raft {
                 self.sync_log_with(peer, current_tick);
             }
         }
+        0
+    }
+
+    /// check append log
+    /// returns None if cannot append
+    /// returns Some((term, index)) if successfully appended
+    pub fn append_log_result(&mut self, lease: u64) -> Option<(i64, u64)> {
+        None
     }
 
     /// generate random election timeout
