@@ -1,29 +1,57 @@
-# raft-kvs
+# Distributed Systems in Rust
 
-![build](https://github.com/skyzh/raft-kvs/workflows/build/badge.svg)
+**A note from Alex Chi**: I've made a (nearly) working Raft implementation before I saw labs provided by PingCAP.
+I gave up on that because I found it hard to migrate 6.824 tests (though I implemented my own unit tests).
+If you're interested in that, you may refer to [legacy](https://github.com/skyzh/raft-kvs/tree/legacy) branch.
+The legacy version built from scratch myself borrows ideas from my previous work on [raft](https://github.com/skyzh/raft/),
+where I abstract Raft instance as a DFA, and feed events into it. 
 
-A distributed key-value store based on Raft.
+A training course about the distributed systems in [Rust].
 
-## Roadmap
+Subjects covered include:
 
-- Implement Raft consensus algorithm
-    - [x] Leader election
-    - [x] Candidate fallback
-    - [x] Leader append log
-    - [x] Follower verify log
-    - [x] Leader sync log
-    - [ ] Migrate test from 6.824
-        - [x] 2A
-        - [ ] 2B
-        - [ ] 2C
-    - [x] Batch append log
-    - [ ] Batch rollback log
-    - [ ] Membership changes (TBD)
-    - [ ] Snapshot (TBD)
-    - [ ] System test
-    - [ ] Implement gRPC
-    - [ ] Config
-    - [ ] Provide abstraction for application
-    - [ ] Migrate test from skyzh/raft
-- Implement KVS
-    - [ ] Migrate test from 6.824
+- [Raft consensus algorithm] (including a fault-tolerant key-value storage service
+using Raft)
+- [Percolator transaction model]
+
+After completing this course you will have the knowledge to implement a basic
+key-value storage service with transaction and fault-tolerant in Rust.
+
+**Important note: Distributed Systems in Rust is in an alpha state**
+It might contain bugs. Any feedback is greatly appreciated. Please [file issues]
+if you have any problem. And also You are encouraged to fix problems on your own
+and submit pull requests.
+
+## The goal of this course
+
+The goal of this course is to teach the Rust programmers who are interested in
+distributed systems to know about how to make the distributed systems reliable
+and how to implement the distributed transaction.
+
+## Who is this for?
+
+Distributed Systems in Rust is for experienced _Rust_ programmers, who are
+familiar with the Rust language. If you are not, you can first learn our [rust]
+lessons.
+
+## A PingCAP-specific note
+
+This course, combined with [Deep Dive TiKV], is intended to be enough to enable
+programmers to meaningfully contribute to [TiKV]. It is most specifically
+designed to teach those in the Chinese Rust community enough Rust to work on
+TiKV. The language used is intended to be simple so that those who read only a
+little English can follow. If you find any of the language difficult to
+understand please [file issues].
+
+## License
+
+[CC-BY 4.0](https://opendefinition.org/licenses/cc-by/)
+
+<!-- links -->
+[rust]: ../rust/README.md
+[file issues]: https://github.com/pingcap/talent-plan/issues/
+[Deep Dive TiKV]: https://tikv.github.io/deep-dive-tikv/overview/introduction.html
+[TiKV]: https://github.com/tikv/tikv/
+[Rust]: https://www.rust-lang.org/
+[Raft consensus algorithm]: raft/README.md
+[Percolator transaction model]: percolator/README.md
