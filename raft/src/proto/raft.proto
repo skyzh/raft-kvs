@@ -4,7 +4,7 @@ package raftpb;
 
 message RequestVoteArgs {
     uint64 term = 1;
-    string candidateId = 2;
+    uint64 candidateId = 2;
     uint64 lastLogIndex = 3;
     uint64 lastLogTerm = 4;
 }
@@ -16,7 +16,7 @@ message RequestVoteReply {
 
 message AppendEntriesArgs {
     uint64 term = 1;
-    string leaderId = 2;
+    uint64 leaderId = 2;
     uint64 prevLogIndex = 3;
     uint64 prevLogTerm = 4;
     repeated uint64 entries_term = 5;
