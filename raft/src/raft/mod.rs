@@ -21,6 +21,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use crate::raft::errors::Error::Rpc;
 
 pub struct ApplyMsg {
     pub command_valid: bool,
@@ -64,52 +65,37 @@ pub enum RPCEvents {
     AppendEntriesReply(AppendEntriesReply),
 }
 
-pub enum RPCEventsFuture {
-    RequestVoteReply(RpcFuture<RequestVoteReply>),
-    AppendEntriesReply(RpcFuture<AppendEntriesReply>),
+impl RPCEvents {
+    pub fn term(&self) -> u64 {
+        match self {
+            RPCEvents::RequestVoteReply(x) => x.term,
+            RPCEvents::AppendEntriesReply(x) => x.term
+        }
+    }
 }
 
 pub struct RPCSequencer {
     rpc_id: u64,
-    rpc_futures: HashMap<u64, (u64, RPCEventsFuture)>,
-    // events: Vec<(u64, u64, RPCEvents)>
+    events: Vec<(u64, u64, RPCEvents)>,
 }
 
 impl RPCSequencer {
-    pub fn new(peer_len: usize) -> Self {
-        RPCSequencer { rpc_id: 0, rpc_futures: HashMap::new(), events: Vec::new() }
+    pub fn new() -> Self {
+        RPCSequencer { rpc_id: 0, events: Vec::new() }
     }
 
-    pub fn send(&mut self, to: u64, f: RPCEventsFuture) -> u64 {
+    pub fn send(&mut self) -> u64 {
         let rpc_id = self.rpc_id;
         self.rpc_id += 1;
-
-        self.rpc_futures.insert(rpc_id, (to, f));
-
         return rpc_id;
     }
 
+    pub fn finish(&mut self, rpc_id: u64, to: u64, event: RPCEvents) {
+        self.events.push((rpc_id, to, event));
+    }
+
     pub fn poll(&mut self) -> Vec<(u64, u64, RPCEvents)> {
-        let current_rpc = std::mem::replace(&mut self.rpc_futures, HashMap::new());
-        let mut events = vec![];
-        for (id, (from, mut future)) in current_rpc {
-            match future {
-                RPCEventsFuture::RequestVoteReply(mut future) => {
-                    match future.poll() {
-                        Ok(Async::Ready(t)) => { events.push((id, from, RPCEvents::RequestVoteReply(t))); }
-                        Ok(Async::NotReady) => { self.rpc_futures.insert(id, (from, RPCEventsFuture::RequestVoteReply(future))); }
-                        Err(e) => { warn!("rpc error: {:?}", e); }
-                    }
-                }
-                RPCEventsFuture::AppendEntriesReply(mut future) => {
-                    match future.poll() {
-                        Ok(Async::Ready(t)) => { events.push((id, from, RPCEvents::AppendEntriesReply(t))); }
-                        Ok(Async::NotReady) => { self.rpc_futures.insert(id, (from, RPCEventsFuture::AppendEntriesReply(future))); }
-                        Err(e) => { warn!("rpc error: {:?}", e); }
-                    }
-                }
-            }
-        }
+        let events = std::mem::replace(&mut self.events, Vec::new());
         events
     }
 }
@@ -163,7 +149,7 @@ pub struct Raft {
 
     /// rpc message sequence number
     /// This is raft-kvs internal state.
-    rpc_sequence: RPCSequencer,
+    rpc_sequence: Arc<Mutex<RPCSequencer>>,
 }
 
 
@@ -197,7 +183,7 @@ impl Raft {
             boot_time: Instant::now(),
             term: 0,
             voted_for: None,
-            rpc_sequence: RPCSequencer::new(peers_len),
+            rpc_sequence: Arc::new(Mutex::new(RPCSequencer::new())),
             commit_index: 0,
             last_applied: 0,
         };
@@ -286,11 +272,35 @@ impl Raft {
     }
 
     fn send_request_vote(&mut self, peer: u64, args: &RequestVoteArgs) -> u64 {
-        self.rpc_sequence.send(peer, RPCEventsFuture::RequestVoteReply(self.peers[peer as usize].request_vote(&args)))
+        let rpc_id = self.rpc_sequence.lock().unwrap().send();
+        let rpc_sequence = self.rpc_sequence.clone();
+        let rpc_peer = &self.peers[peer as usize];
+        rpc_peer.spawn(
+            rpc_peer.request_vote(&args)
+                .map_err(Error::Rpc)
+                .then(move |res| {
+                    if let Ok(res) = res {
+                        rpc_sequence.lock().unwrap().finish(rpc_id, peer, RPCEvents::RequestVoteReply(res));
+                    }
+                    Ok(())
+                }));
+        rpc_id
     }
 
     fn send_append_entries(&mut self, peer: u64, args: &AppendEntriesArgs) -> u64 {
-        self.rpc_sequence.send(peer, RPCEventsFuture::AppendEntriesReply(self.peers[peer as usize].append_entries(&args)))
+        let rpc_id = self.rpc_sequence.lock().unwrap().send();
+        let rpc_sequence = self.rpc_sequence.clone();
+        let rpc_peer = &self.peers[peer as usize];
+        rpc_peer.spawn(
+            rpc_peer.append_entries(&args)
+                .map_err(Error::Rpc)
+                .then(move |res| {
+                    if let Ok(res) = res {
+                        rpc_sequence.lock().unwrap().finish(rpc_id, peer, RPCEvents::AppendEntriesReply(res));
+                    }
+                    Ok(())
+                }));
+        rpc_id
     }
 
     fn start<M>(&self, command: &M) -> Result<(u64, u64)>
@@ -393,6 +403,10 @@ impl Raft {
 
     /// proceess append entries rpc
     fn on_rpc_append_entries(&mut self, args: AppendEntriesArgs) -> RpcFuture<AppendEntriesReply> {
+        if args.term > self.term {
+            self.as_follower();
+            self.term = args.term;
+        }
         match self.role {
             Role::Follower => {
                 self.election_start_at =
@@ -427,6 +441,10 @@ impl Raft {
     }
 
     pub fn on_event(&mut self, rpc_id: u64, from: u64, event: RPCEvents) {
+        if event.term() > self.term {
+            self.as_follower();
+            self.term = event.term();
+        }
         match self.role {
             Role::Candidate => self.candidate_rpc_event(rpc_id, from, event),
             _ => {}
@@ -489,7 +507,8 @@ impl Node {
             while !cancel.load(SeqCst) {
                 {
                     let mut raft = raft.lock().unwrap();
-                    for (id, from, event) in raft.rpc_sequence.poll() {
+                    let events = raft.rpc_sequence.lock().unwrap().poll();
+                    for (id, from, event) in events {
                         raft.on_event(id, from, event);
                     }
                     raft.tick();
