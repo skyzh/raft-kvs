@@ -12,6 +12,6 @@ jobs:
       - name: build
         run: cargo build --release --all-features
       - name: test 2a
-        run: make test_2a
+        run: LOG_LEVEL=raft=warn make test_2a
       - name: test 2b
-        run: make test_2b
+        run: LOG_LEVEL=raft=warn make test_2b

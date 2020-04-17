@@ -34,7 +34,7 @@ test_percolator: check
 	RUST_LOG=${LOG_LEVEL} cargo test -p percolator -- --nocapture
 
 test_alex: FORCE
-	RUST_LOG=${LOG_LEVEL} cargo test -p raft --lib raft::tests::test_basic_agree_2b -- --nocapture
+	RUST_LOG=${LOG_LEVEL} cargo test -p raft --lib raft::tests::test_backup_2b -- --nocapture
 
 .PHONY: FORCE
 FORCE:

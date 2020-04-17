@@ -1,4 +1,3 @@
-use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 
 use futures::sync::mpsc::UnboundedSender;
@@ -14,14 +13,13 @@ mod tests;
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
-use futures::{Future, Async};
+use futures::Future;
 use rand::Rng;
 use std::collections::{HashSet, HashMap};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use crate::raft::errors::Error::Rpc;
 
 pub struct ApplyMsg {
     pub command_valid: bool,
@@ -160,8 +158,9 @@ pub struct Raft {
     rpc_sequence: Arc<Mutex<RPCSequencer>>,
 
     /// used to pair RPC request with RPC response. Will be periodically cleared.
+    /// prev_log_index, current_tick, entries_length, failed attempt
     /// This is a raft-kvs internal state.
-    rpc_append_entries_log_idx: HashMap<u64, (u64, u128, u64)>,
+    rpc_append_entries_log_idx: HashMap<u64, (u64, u128, u64, u64)>,
 
     /// apply channel
     apply_ch: UnboundedSender<ApplyMsg>,
@@ -184,7 +183,6 @@ impl Raft {
         apply_ch: UnboundedSender<ApplyMsg>,
     ) -> Raft {
         let raft_state = persister.raft_state();
-        let peers_len = peers.len();
 
         let mut rf = Raft {
             peers,
@@ -342,6 +340,7 @@ impl Raft {
             labcodec::encode(command, &mut buf).map_err(Error::Encode)?;
             let term = self.term;
             self.log.push((term, buf));
+            self.debug_log();
             let index = self.last_log_index();
             Ok((index, term))
         } else {
@@ -355,9 +354,13 @@ impl Raft {
         latest_match.push(self.last_log_index());
         latest_match.sort();
         let commit_idx = latest_match[self.peers.len() / 2]; // 4 -> 2, 5 -> 2
-        self.commit_index = commit_idx;
-        debug!("leader commit {:?}=>{}", self.match_index, self.commit_index);
-        self.apply_message();
+        if commit_idx > 0 && commit_idx > self.commit_index {
+            if self.log[commit_idx as usize - 1].0 == self.term {
+                self.commit_index = commit_idx;
+                debug!("leader commit {:?}=>{}", self.match_index, self.commit_index);
+                self.apply_message();
+            }
+        }
     }
 
     /// apply log message
@@ -366,7 +369,7 @@ impl Raft {
             self.apply_ch.unbounded_send(ApplyMsg {
                 command_valid: true,
                 command_index: idx,
-                command: self.log[idx as usize - 1].1.clone()
+                command: self.log[idx as usize - 1].1.clone(),
             }).unwrap();
         }
     }
@@ -376,7 +379,7 @@ impl Raft {
         for peer in 0..self.peers.len() {
             let peer = peer as u64;
             if peer != self.me {
-                self.sync_log_with(peer);
+                self.sync_log_with(peer, 0);
             }
         }
     }
@@ -398,7 +401,7 @@ impl Raft {
     }
 
     /// sync log to peer
-    fn sync_log_with(&mut self, peer: u64) {
+    fn sync_log_with(&mut self, peer: u64, failed_attempt: u64) {
         let next_idx = *self.next_index.get(&peer).unwrap();
         if self.last_log_index() < next_idx {
             self.heartbeat(peer);
@@ -425,7 +428,7 @@ impl Raft {
         );
         let current_tick = self.current_tick();
         self.rpc_append_entries_log_idx
-            .insert(rpc_id, (prev_log_index, current_tick, entries_length as u64));
+            .insert(rpc_id, (prev_log_index, current_tick, entries_length as u64, failed_attempt));
     }
 
     /// handle routine tasks
@@ -458,10 +461,10 @@ impl Raft {
     fn update_rpc_cache(&mut self) {
         let current_tick = self.current_tick();
         let expired = std::mem::replace(&mut self.rpc_append_entries_log_idx, HashMap::new());
-        for (req, (idx, timestamp, length)) in expired.into_iter() {
+        for (req, (idx, timestamp, length, failed_attempt)) in expired.into_iter() {
             if timestamp + 10000 >= current_tick {
                 self.rpc_append_entries_log_idx
-                    .insert(req, (idx, timestamp, length));
+                    .insert(req, (idx, timestamp, length, failed_attempt));
             }
         }
     }
@@ -477,8 +480,8 @@ impl Raft {
                 let vote_granted = match self.voted_for {
                     Some(candidate_id) => candidate_id == args.candidate_id,
                     None => {
-                        // TODO: how to check up-to-date?
-                        args.last_log_index >= self.last_log_index()
+                        args.last_log_term > self.last_log_term() ||
+                            (args.last_log_term == self.last_log_term() && args.last_log_index >= self.last_log_index())
                     }
                 };
                 if vote_granted {
@@ -500,6 +503,14 @@ impl Raft {
         }
     }
 
+    fn debug_log(&self) {
+        let mut x = String::new();
+        for (term, log) in self.log.iter() {
+            x += format!("{} {} ({:?}), ", term, log.len(), log).as_ref();
+        }
+        debug!("@{} commit={} log={}", self.me, self.commit_index, x);
+    }
+
     /// proceess append entries rpc
     fn on_rpc_append_entries(&mut self, args: AppendEntriesArgs) -> RpcFuture<AppendEntriesReply> {
         if args.term > self.term {
@@ -518,26 +529,31 @@ impl Raft {
 
                 let mut ok = false;
                 if args.term < self.term {
-                    info!("append entries failed: lower term");
+                    info!("@{} append entries failed: lower term", self.me);
                 } else if args.prev_log_index > self.last_log_index() {
-                    info!("append entries failed: log not found");
+                    info!("@{} append entries failed: log not found", self.me);
                 } else if self.log_term_of(args.prev_log_index) == args.prev_log_term {
                     ok = true;
                 } else {
-                    info!("append entries failed: term not match");
+                    info!("@{} append entries failed: term not match", self.me);
                 }
-                // TODO: what if conclict?
-
                 if ok {
                     let length = args.entries.len();
                     for (idx, log) in args.entries_term.into_iter().zip(args.entries.into_iter()).enumerate() {
                         let log_idx = args.prev_log_index as usize + idx;
                         if log_idx < self.log.len() {
-                            self.log[log_idx] = log;
+                            if self.log[log_idx].0 != log.0 {
+                                self.log.drain(log_idx..);
+                                self.log.push(log);
+                                info!("@{} drain log", self.me);
+                            } else {
+                                self.log[log_idx] = log;
+                            }
                         } else {
                             self.log.push(log);
                         }
                     }
+                    self.debug_log();
                     debug!("append entries success {}, {}", length, self.log.len());
                     if args.leader_commit > self.commit_index {
                         self.commit_index = self.last_log_index().min(args.leader_commit);
@@ -577,17 +593,25 @@ impl Raft {
             if prev_match_index.is_none() {
                 return;
             }
-            let (prev_match_index, _, length) = prev_match_index.unwrap();
+            let (prev_match_index, _, length, failed_attempt) = prev_match_index.unwrap();
             let length = *length;
             let prev_match_index = *prev_match_index;
+            let failed_attempt = *failed_attempt;
             self.rpc_append_entries_log_idx.remove(&rpc_id);
             if reply.success {
                 *self.match_index.get_mut(&from).unwrap() = prev_match_index + length;
                 *self.next_index.get_mut(&from).unwrap() = prev_match_index + length + 1;
                 self.try_commit();
             } else {
-                *self.next_index.get_mut(&from).unwrap() = prev_match_index;
-                info!("append failed, prev_match_index={}, from={}", prev_match_index, from);
+                let subtract_size = 2_u64.pow(failed_attempt as u32) - 1;
+                let prev_match_index = if prev_match_index >= subtract_size {
+                    prev_match_index - subtract_size
+                } else {
+                    0
+                };
+                *self.next_index.get_mut(&from).unwrap() = prev_match_index.max(1);
+                self.sync_log_with(from, failed_attempt + 1);
+                info!("append failed, prev_match_index={}, from={}, attempt={}", prev_match_index, from, failed_attempt);
             }
         }
     }
@@ -659,6 +683,7 @@ impl Node {
         let raft = node.raft.clone();
         node.ticker = Arc::new(Some(std::thread::spawn(move || {
             while !cancel.load(SeqCst) {
+                let this_tick = Instant::now();
                 {
                     let mut raft = raft.lock().unwrap();
                     let events = raft.rpc_sequence.lock().unwrap().poll();
@@ -667,7 +692,16 @@ impl Node {
                     }
                     raft.tick();
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                while this_tick.elapsed().as_millis() < 100 {
+                    {
+                        let mut raft = raft.lock().unwrap();
+                        let events = raft.rpc_sequence.lock().unwrap().poll();
+                        for (id, from, event) in events {
+                            raft.on_event(id, from, event);
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
         })));
         node
