@@ -14,9 +14,9 @@ mod tests;
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
-use futures::Future;
+use futures::{Future, Async};
 use rand::Rng;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
 use std::thread::JoinHandle;
@@ -32,7 +32,7 @@ pub struct ApplyMsg {
 #[derive(Default, Clone, Debug)]
 pub struct State {
     pub term: u64,
-    pub voted_for: Option<usize>,
+    pub voted_for: Option<u64>,
     pub is_leader: bool,
 }
 
@@ -46,7 +46,7 @@ impl State {
         self.is_leader
     }
     /// candidate_id that received vote in current term
-    pub fn voted_for(&self) -> Option<usize> {
+    pub fn voted_for(&self) -> Option<u64> {
         self.voted_for
     }
 }
@@ -59,6 +59,61 @@ enum Role {
     Leader,
 }
 
+pub enum RPCEvents {
+    RequestVoteReply(RequestVoteReply),
+    AppendEntriesReply(AppendEntriesReply),
+}
+
+pub enum RPCEventsFuture {
+    RequestVoteReply(RpcFuture<RequestVoteReply>),
+    AppendEntriesReply(RpcFuture<AppendEntriesReply>),
+}
+
+pub struct RPCSequencer {
+    rpc_id: u64,
+    rpc_futures: HashMap<u64, (u64, RPCEventsFuture)>,
+    // events: Vec<(u64, u64, RPCEvents)>
+}
+
+impl RPCSequencer {
+    pub fn new(peer_len: usize) -> Self {
+        RPCSequencer { rpc_id: 0, rpc_futures: HashMap::new(), events: Vec::new() }
+    }
+
+    pub fn send(&mut self, to: u64, f: RPCEventsFuture) -> u64 {
+        let rpc_id = self.rpc_id;
+        self.rpc_id += 1;
+
+        self.rpc_futures.insert(rpc_id, (to, f));
+
+        return rpc_id;
+    }
+
+    pub fn poll(&mut self) -> Vec<(u64, u64, RPCEvents)> {
+        let current_rpc = std::mem::replace(&mut self.rpc_futures, HashMap::new());
+        let mut events = vec![];
+        for (id, (from, mut future)) in current_rpc {
+            match future {
+                RPCEventsFuture::RequestVoteReply(mut future) => {
+                    match future.poll() {
+                        Ok(Async::Ready(t)) => { events.push((id, from, RPCEvents::RequestVoteReply(t))); }
+                        Ok(Async::NotReady) => { self.rpc_futures.insert(id, (from, RPCEventsFuture::RequestVoteReply(future))); }
+                        Err(e) => { warn!("rpc error: {:?}", e); }
+                    }
+                }
+                RPCEventsFuture::AppendEntriesReply(mut future) => {
+                    match future.poll() {
+                        Ok(Async::Ready(t)) => { events.push((id, from, RPCEvents::AppendEntriesReply(t))); }
+                        Ok(Async::NotReady) => { self.rpc_futures.insert(id, (from, RPCEventsFuture::AppendEntriesReply(future))); }
+                        Err(e) => { warn!("rpc error: {:?}", e); }
+                    }
+                }
+            }
+        }
+        events
+    }
+}
+
 // A single Raft peer.
 pub struct Raft {
     // RPC end points of all peers
@@ -66,14 +121,14 @@ pub struct Raft {
     // Object to hold this peer's persisted state
     persister: Box<dyn Persister>,
     // this peer's index into peers[]
-    me: usize,
+    me: u64,
 
     /// latest term server has seen (initialized to 0 on first boot)
     /// This is a persistent state.
     term: u64,
     /// candidate_id that received vote in current term
     /// This is a persistent state.
-    voted_for: Option<usize>,
+    voted_for: Option<u64>,
     /// log entries; each entry contains command for state machine, and term when
     /// entry was received by leader (first index is 1)
     /// This is a persistent state.
@@ -82,6 +137,13 @@ pub struct Raft {
     /// role of Raft instance
     /// This is raft-kvs internal state.
     role: Role,
+
+    /// index of highest log entry known to be committed (initialized to 0)
+    /// This is a volatile state.
+    commit_index: u64,
+    /// index of highest log entry applied to state machine (initialized to 0)
+    /// This is a volatile state.
+    last_applied: u64,
 
     /// follower will start election after this time
     /// This is raft-kvs internal state. Should be reset when become follower.
@@ -93,12 +155,17 @@ pub struct Raft {
 
     /// number of votes a candidate gets
     /// This is raft-kvs internal state. Should be reset when become candidate.
-    vote_from: HashSet<usize>,
+    vote_from: HashSet<u64>,
 
     /// time of booting Raft instance
     /// This is raft-kvs internal state.
     boot_time: Instant,
+
+    /// rpc message sequence number
+    /// This is raft-kvs internal state.
+    rpc_sequence: RPCSequencer,
 }
+
 
 impl Raft {
     /// the service or tester wants to create a Raft server. the ports
@@ -116,11 +183,12 @@ impl Raft {
         _apply_ch: UnboundedSender<ApplyMsg>,
     ) -> Raft {
         let raft_state = persister.raft_state();
+        let peers_len = peers.len();
 
         let mut rf = Raft {
             peers,
             persister,
-            me,
+            me: me as u64,
             log: vec![],
             role: Role::Follower,
             election_start_at: 0,
@@ -129,6 +197,9 @@ impl Raft {
             boot_time: Instant::now(),
             term: 0,
             voted_for: None,
+            rpc_sequence: RPCSequencer::new(peers_len),
+            commit_index: 0,
+            last_applied: 0,
         };
 
         // initialize from state persisted before a crash
@@ -171,32 +242,15 @@ impl Raft {
         self.vote_from = HashSet::new();
         self.vote_from.insert(self.me);
         self.election_timeout_at = self.current_tick() + Self::tick_election_fail_at();
-        let (tx, rx) = channel();
-        for (id, peer) in self.peers.iter().enumerate() {
-            if id != self.me {
-                self.send_request_vote(
-                    peer,
-                    &RequestVoteArgs {
-                        term: self.term,
-                        candidate_id: self.me as u64,
-                        last_log_index: self.last_log_index(),
-                        last_log_term: self.last_log_term(),
-                    },
-                    tx.clone(),
-                );
-            }
-        }
-        let mut approved_vote = 1;
-        for _ in 0..(self.peers.len() - 1) {
-            let msg = rx.recv().unwrap();
-            if let Ok(msg) = msg {
-                if msg.vote_granted {
-                    approved_vote += 1;
-                    if approved_vote * 2 >= self.peers.len() {
-                        self.as_leader();
-                        return;
-                    }
-                }
+        for peer in 0..self.peers.len() {
+            let peer = peer as u64;
+            if peer != self.me {
+                self.send_request_vote(peer, &RequestVoteArgs {
+                    term: self.term,
+                    candidate_id: self.me,
+                    last_log_index: self.last_log_index(),
+                    last_log_term: self.last_log_term(),
+                });
             }
         }
     }
@@ -231,42 +285,17 @@ impl Raft {
         // }
     }
 
-    /// example code to send a RequestVote RPC to a server.
-    /// server is the index of the target server in peers.
-    /// expects RPC arguments in args.
-    ///
-    /// The labrpc package simulates a lossy network, in which servers
-    /// may be unreachable, and in which requests and replies may be lost.
-    /// This method sends a request and waits for a reply. If a reply arrives
-    /// within a timeout interval, This method returns Ok(_); otherwise
-    /// this method returns Err(_). Thus this method may not return for a while.
-    /// An Err(_) return can be caused by a dead server, a live server that
-    /// can't be reached, a lost request, or a lost reply.
-    ///
-    /// This method is guaranteed to return (perhaps after a delay) *except* if
-    /// the handler function on the server side does not return.  Thus there
-    /// is no need to implement your own timeouts around this method.
-    ///
-    /// look at the comments in ../labrpc/src/lib.rs for more details.
-    fn send_request_vote(
-        &self,
-        peer: &RaftClient,
-        args: &RequestVoteArgs,
-        tx: Sender<Result<RequestVoteReply>>,
-    ) {
-        peer.spawn(
-            peer.request_vote(&args)
-                .map_err(Error::Rpc)
-                .then(move |res| {
-                    tx.send(res).ok();
-                    Ok(())
-                }),
-        );
+    fn send_request_vote(&mut self, peer: u64, args: &RequestVoteArgs) -> u64 {
+        self.rpc_sequence.send(peer, RPCEventsFuture::RequestVoteReply(self.peers[peer as usize].request_vote(&args)))
+    }
+
+    fn send_append_entries(&mut self, peer: u64, args: &AppendEntriesArgs) -> u64 {
+        self.rpc_sequence.send(peer, RPCEventsFuture::AppendEntriesReply(self.peers[peer as usize].append_entries(&args)))
     }
 
     fn start<M>(&self, command: &M) -> Result<(u64, u64)>
-    where
-        M: labcodec::Message,
+        where
+            M: labcodec::Message,
     {
         let index = 0;
         let term = 0;
@@ -280,6 +309,29 @@ impl Raft {
         } else {
             Err(Error::NotLeader)
         }
+    }
+
+    /// send heartbeats to followers
+    fn heartbeats(&mut self) {
+        for peer in 0..self.peers.len() {
+            let peer = peer as u64;
+            if peer != self.me {
+                self.sync_log_with(peer);
+            }
+        }
+    }
+
+    /// sync log to peer
+    fn sync_log_with(&mut self, peer: u64) {
+        self.send_append_entries(peer, &AppendEntriesArgs {
+            term: self.term,
+            leader_id: self.me,
+            prev_log_term: 0,
+            prev_log_index: 0,
+            entries: vec![],
+            entries_term: vec![],
+            leader_commit: self.commit_index,
+        });
     }
 
     /// handle routine tasks
@@ -300,7 +352,84 @@ impl Raft {
             }
             Role::Leader => {
                 // periodically send heartbeats to followers
+                self.heartbeats();
             }
+        }
+    }
+
+    /// proceses request vote rpc
+    fn on_rpc_request_vote(&mut self, args: RequestVoteArgs) -> RpcFuture<RequestVoteReply> {
+        if args.term > self.term {
+            self.as_follower();
+            self.term = args.term;
+        }
+        match self.role {
+            Role::Follower => {
+                let vote_granted = match self.voted_for {
+                    Some(candidate_id) => candidate_id == args.candidate_id,
+                    None => {
+                        // TODO: how to check up-to-date?
+                        args.last_log_index >= self.last_log_index()
+                    }
+                };
+                if vote_granted {
+                    self.voted_for = Some(args.candidate_id);
+                }
+                self.election_start_at =
+                    self.boot_time.elapsed().as_millis() + Self::tick_election_start_at();
+                Box::new(futures::future::ok(RequestVoteReply {
+                    term: self.term,
+                    vote_granted,
+                }))
+            }
+            _ => {
+                Box::new(futures::future::ok(RequestVoteReply {
+                    term: self.term,
+                    vote_granted: false,
+                }))
+            }
+        }
+    }
+
+    /// proceess append entries rpc
+    fn on_rpc_append_entries(&mut self, args: AppendEntriesArgs) -> RpcFuture<AppendEntriesReply> {
+        match self.role {
+            Role::Follower => {
+                self.election_start_at =
+                    self.boot_time.elapsed().as_millis() + Self::tick_election_start_at();
+                Box::new(futures::future::ok(AppendEntriesReply {
+                    term: self.term,
+                    success: false,
+                }))
+            }
+            _ => {
+                Box::new(futures::future::ok(AppendEntriesReply {
+                    term: self.term,
+                    success: false,
+                }))
+            }
+        }
+    }
+
+    /// candidate rpc event
+    fn candidate_rpc_event(&mut self, _rpc_id: u64, from: u64, event: RPCEvents) {
+        match event {
+            RPCEvents::RequestVoteReply(reply) => {
+                if reply.vote_granted {
+                    self.vote_from.insert(from);
+                    if self.vote_from.len() * 2 >= self.peers.len() {
+                        self.as_leader();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn on_event(&mut self, rpc_id: u64, from: u64, event: RPCEvents) {
+        match self.role {
+            Role::Candidate => self.candidate_rpc_event(rpc_id, from, event),
+            _ => {}
         }
     }
 
@@ -360,6 +489,9 @@ impl Node {
             while !cancel.load(SeqCst) {
                 {
                     let mut raft = raft.lock().unwrap();
+                    for (id, from, event) in raft.rpc_sequence.poll() {
+                        raft.on_event(id, from, event);
+                    }
                     raft.tick();
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -381,8 +513,8 @@ impl Node {
     ///
     /// This method must return without blocking on the raft.
     pub fn start<M>(&self, command: &M) -> Result<(u64, u64)>
-    where
-        M: labcodec::Message,
+        where
+            M: labcodec::Message,
     {
         self.raft.lock().unwrap().start(command)
     }
@@ -430,39 +562,11 @@ impl Drop for Node {
 impl RaftService for Node {
     fn request_vote(&self, args: RequestVoteArgs) -> RpcFuture<RequestVoteReply> {
         let mut raft = self.raft.lock().unwrap();
-        if args.term > raft.term {
-            raft.as_follower();
-            raft.term = args.term;
-        }
-        match raft.role {
-            Role::Follower => {
-                let vote_granted = match raft.voted_for {
-                    Some(candidate_id) => candidate_id == args.candidate_id as usize,
-                    None => {
-                        // TODO: how to check up-to-date?
-                        args.last_log_index >= raft.last_log_index()
-                    }
-                };
-                if vote_granted {
-                    raft.voted_for = Some(args.candidate_id as usize);
-                }
-                raft.election_start_at =
-                    raft.boot_time.elapsed().as_millis() + Raft::tick_election_start_at();
-                Box::new(futures::future::ok(RequestVoteReply {
-                    term: raft.term,
-                    vote_granted,
-                }))
-            }
-            _ => {
-                Box::new(futures::future::ok(RequestVoteReply {
-                    term: raft.term,
-                    vote_granted: false,
-                }))
-            }
-        }
+        raft.on_rpc_request_vote(args)
     }
 
-    fn append_entries(&self, _args: AppendEntriesArgs) -> RpcFuture<AppendEntriesReply> {
-        unimplemented!()
+    fn append_entries(&self, args: AppendEntriesArgs) -> RpcFuture<AppendEntriesReply> {
+        let mut raft = self.raft.lock().unwrap();
+        raft.on_rpc_append_entries(args)
     }
 }
