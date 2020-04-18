@@ -9,6 +9,8 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/cargo@v1
+      - name: install components
+        run: rustup component add rustfmt clippy
       - name: build
         run: cargo build --release --all-features
       - name: test 2a
