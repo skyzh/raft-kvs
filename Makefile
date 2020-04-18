@@ -1,4 +1,4 @@
-# export RUSTFLAGS=-Dwarnings
+export RUSTFLAGS=-Dwarnings
 export RUST_TEST_THREADS=1
 export RUST_BACKTRACE=1
 
@@ -24,7 +24,7 @@ test_3a: cargo_test_3a
 
 test_3b: cargo_test_3b
 
-cargo_test_%:
+cargo_test_%: check
 	RUST_LOG=${LOG_LEVEL} cargo test -p raft -- --nocapture --test $*
 
 test_others: check

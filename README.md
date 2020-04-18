@@ -1,11 +1,5 @@
 # Distributed Systems in Rust
 
-**A note from Alex Chi**: I've made a (nearly) working Raft implementation before I saw labs provided by PingCAP.
-I gave up on that because I found it hard to migrate 6.824 tests (though I implemented my own unit tests).
-If you're interested in that, you may refer to [legacy](https://github.com/skyzh/raft-kvs/tree/legacy) branch.
-The legacy version built from scratch myself borrows ideas from my previous work on [raft](https://github.com/skyzh/raft/),
-where I abstract Raft instance as a DFA, and feed events into it. 
-
 A training course about the distributed systems in [Rust].
 
 Subjects covered include:
