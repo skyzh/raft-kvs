@@ -18,6 +18,7 @@ use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
+use std::sync::mpsc::{channel, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -74,15 +75,11 @@ impl RPCEvents {
 
 pub struct RPCSequencer {
     rpc_id: u64,
-    events: Vec<(u64, u64, RPCEvents)>,
 }
 
 impl Default for RPCSequencer {
     fn default() -> Self {
-        RPCSequencer {
-            rpc_id: 0,
-            events: Vec::new(),
-        }
+        RPCSequencer { rpc_id: 0 }
     }
 }
 
@@ -91,14 +88,6 @@ impl RPCSequencer {
         let rpc_id = self.rpc_id;
         self.rpc_id += 1;
         rpc_id
-    }
-
-    pub fn finish(&mut self, rpc_id: u64, to: u64, event: RPCEvents) {
-        self.events.push((rpc_id, to, event));
-    }
-
-    pub fn poll(&mut self) -> Vec<(u64, u64, RPCEvents)> {
-        std::mem::replace(&mut self.events, Vec::new())
     }
 }
 
@@ -159,7 +148,11 @@ pub struct Raft {
 
     /// rpc message sequence number
     /// This is raft-kvs internal state.
-    rpc_sequence: Arc<Mutex<RPCSequencer>>,
+    rpc_sequence: RPCSequencer,
+
+    /// rpc completion channel
+    /// background thread should send events to this instance
+    rpc_channel_tx: Option<Sender<(u64, u64, RPCEvents)>>,
 
     /// used to pair RPC request with RPC response. Will be periodically cleared.
     /// prev_log_index, current_tick, entries_length, failed attempt
@@ -205,6 +198,7 @@ impl Raft {
             next_index: HashMap::new(),
             match_index: HashMap::new(),
             rpc_append_entries_log_idx: HashMap::new(),
+            rpc_channel_tx: None,
             apply_ch,
         };
 
@@ -322,20 +316,18 @@ impl Raft {
     }
 
     fn send_request_vote(&mut self, peer: u64, args: &RequestVoteArgs) -> u64 {
-        let rpc_id = self.rpc_sequence.lock().unwrap().send();
-        let rpc_sequence = self.rpc_sequence.clone();
+        let rpc_id = self.rpc_sequence.send();
         let rpc_peer = &self.peers[peer as usize];
+        let tx_channel = self.rpc_channel_tx.clone().unwrap();
         rpc_peer.spawn(
             rpc_peer
                 .request_vote(&args)
                 .map_err(Error::Rpc)
                 .then(move |res| {
                     if let Ok(res) = res {
-                        rpc_sequence.lock().unwrap().finish(
-                            rpc_id,
-                            peer,
-                            RPCEvents::RequestVoteReply(res),
-                        );
+                        tx_channel
+                            .send((rpc_id, peer, RPCEvents::RequestVoteReply(res)))
+                            .ok();
                     }
                     Ok(())
                 }),
@@ -344,20 +336,18 @@ impl Raft {
     }
 
     fn send_append_entries(&mut self, peer: u64, args: &AppendEntriesArgs) -> u64 {
-        let rpc_id = self.rpc_sequence.lock().unwrap().send();
-        let rpc_sequence = self.rpc_sequence.clone();
+        let rpc_id = self.rpc_sequence.send();
         let rpc_peer = &self.peers[peer as usize];
+        let tx_channel = self.rpc_channel_tx.clone().unwrap();
         rpc_peer.spawn(
             rpc_peer
                 .append_entries(&args)
                 .map_err(Error::Rpc)
                 .then(move |res| {
                     if let Ok(res) = res {
-                        rpc_sequence.lock().unwrap().finish(
-                            rpc_id,
-                            peer,
-                            RPCEvents::AppendEntriesReply(res),
-                        );
+                        tx_channel
+                            .send((rpc_id, peer, RPCEvents::AppendEntriesReply(res)))
+                            .ok();
                     }
                     Ok(())
                 }),
@@ -716,6 +706,7 @@ pub struct Node {
     raft: Arc<Mutex<Raft>>,
     cancel: Arc<AtomicBool>,
     ticker: Arc<Option<JoinHandle<()>>>,
+    poll_ticker: Arc<Option<JoinHandle<()>>>,
 }
 
 impl Node {
@@ -723,34 +714,31 @@ impl Node {
     pub fn new(raft: Raft) -> Node {
         let raft = Arc::new(Mutex::new(raft));
         let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = channel();
+        raft.lock().unwrap().rpc_channel_tx = Some(tx);
         let mut node = Node {
             raft,
             cancel,
             ticker: Arc::new(None),
+            poll_ticker: Arc::new(None),
         };
         let cancel = node.cancel.clone();
         let raft = node.raft.clone();
         node.ticker = Arc::new(Some(std::thread::spawn(move || {
             while !cancel.load(SeqCst) {
-                let this_tick = Instant::now();
                 {
                     let mut raft = raft.lock().unwrap();
-                    let events = raft.rpc_sequence.lock().unwrap().poll();
-                    for (id, from, event) in events {
-                        raft.on_event(id, from, event);
-                    }
                     raft.tick();
                 }
-                while this_tick.elapsed().as_millis() < 100 {
-                    {
-                        let mut raft = raft.lock().unwrap();
-                        let events = raft.rpc_sequence.lock().unwrap().poll();
-                        for (id, from, event) in events {
-                            raft.on_event(id, from, event);
-                        }
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })));
+
+        let raft = node.raft.clone();
+        node.poll_ticker = Arc::new(Some(std::thread::spawn(move || {
+            for (id, from, event) in rx.iter() {
+                let mut raft = raft.lock().unwrap();
+                raft.on_event(id, from, event);
             }
         })));
         node

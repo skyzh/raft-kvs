@@ -1,4 +1,4 @@
-export RUSTFLAGS=-Dwarnings
+# export RUSTFLAGS=-Dwarnings
 export RUST_TEST_THREADS=1
 export RUST_BACKTRACE=1
 
