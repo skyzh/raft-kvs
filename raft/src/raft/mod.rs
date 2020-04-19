@@ -434,8 +434,8 @@ impl Raft {
         {
             self.commit_index = commit_idx;
             info!(
-                "@{} leader commit {:?}=>{}", self.me,
-                self.match_index, self.commit_index
+                "@{} leader commit {:?}=>{}",
+                self.me, self.match_index, self.commit_index
             );
             self.apply_message();
         }
@@ -651,7 +651,12 @@ impl Raft {
                             log_entries.push(log);
                         }
                     }
-                    debug!("@{} append entries success {}, {}", self.me, length, log_entries.len());
+                    debug!(
+                        "@{} append entries success {}, {}",
+                        self.me,
+                        length,
+                        log_entries.len()
+                    );
                     self.debug_log();
                     if args.leader_commit > self.commit_index {
                         self.commit_index = self.last_log_index().min(args.leader_commit);
@@ -710,8 +715,8 @@ impl Raft {
                 *self.next_index.get_mut(&from).unwrap() = prev_match_index.max(1);
                 self.sync_log_with(from, failed_attempt + 1);
                 debug!(
-                    "@{} -> {} append failed, prev_match_index={}, from={}, attempt={}", self.me, from,
-                    prev_match_index, from, failed_attempt
+                    "@{} -> {} append failed, prev_match_index={}, from={}, attempt={}",
+                    self.me, from, prev_match_index, from, failed_attempt
                 );
             }
         }
