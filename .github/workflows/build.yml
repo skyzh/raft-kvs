@@ -6,14 +6,23 @@ jobs:
   build_and_test:
     name: build and test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cargo_flag: ["", "--release"]
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/cargo@v1
       - name: install components
         run: rustup component add rustfmt clippy
       - name: build
-        run: cargo build --release --all-features
+        run: cargo build $CARGO_FLAG --all-features
+        env:
+          CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2a
         run: LOG_LEVEL=raft=warn make test_2a
+        env:
+          CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2b
         run: LOG_LEVEL=raft=warn make test_2b
+        env:
+          CARGO_FLAG: ${{ matrix.cargo_flag }}
