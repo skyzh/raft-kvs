@@ -1,7 +1,7 @@
 # export RUSTFLAGS=-Dwarnings
 export RUST_TEST_THREADS=1
 export RUST_BACKTRACE=1
-
+CARGO_FLAG ?=
 LOG_LEVEL ?= raft=info,percolator=info
 
 check:
@@ -25,16 +25,16 @@ test_3a: cargo_test_3a
 test_3b: cargo_test_3b
 
 cargo_test_%: check
-	RUST_LOG=${LOG_LEVEL} cargo test -p raft -- --nocapture --test $*
+	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG) -p raft -- --nocapture --test $*
 
 test_others: check
-	RUST_LOG=${LOG_LEVEL} cargo test -p labrpc -p labcodec -- --nocapture
+	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p labrpc -p labcodec -- --nocapture
 
 test_percolator: check
-	RUST_LOG=${LOG_LEVEL} cargo test -p percolator -- --nocapture
+	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p percolator -- --nocapture
 
 test_alex: FORCE
-	RUST_LOG=${LOG_LEVEL} cargo test -p raft --lib raft::tests::test_backup_2b -- --nocapture
+	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p raft --lib tests::test_figure_8_unreliable_2c -- --nocapture
 
 .PHONY: FORCE
 FORCE:

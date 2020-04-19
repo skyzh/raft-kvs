@@ -26,3 +26,7 @@ jobs:
         run: LOG_LEVEL=raft=warn make test_2b
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
+      - name: test 2c
+      run: LOG_LEVEL=raft=warn make test_2c
+      env:
+        CARGO_FLAG: ${{ matrix.cargo_flag }}
