@@ -173,6 +173,9 @@ pub struct Raft {
     ///(initialized to 0)
     /// This is a volatile state for leaders.
     match_index: HashMap<u64, u64>,
+    /// if a node only requires a heartbeat, don't send it too frequently
+    /// This is a volatile state for leaders.
+    next_heartbeat: HashMap<u64, u128>,
 
     /// follower will start election after this time
     /// This is raft-kvs internal state. Should be reset when become follower.
@@ -247,6 +250,7 @@ impl Raft {
             match_index: HashMap::new(),
             rpc_append_entries_log_idx: HashMap::new(),
             rpc_channel_tx: None,
+            next_heartbeat: HashMap::new(),
             apply_ch,
         };
 
@@ -466,18 +470,36 @@ impl Raft {
 
     /// send heartbeat to peer
     fn heartbeat(&mut self, peer: u64) {
-        self.send_append_entries(
-            peer,
-            &AppendEntriesArgs {
-                term: self.persist_state.term(),
-                leader_id: self.me,
-                prev_log_term: self.last_log_term(),
-                prev_log_index: self.last_log_index(),
-                entries: vec![],
-                entries_term: vec![],
-                leader_commit: self.commit_index,
-            },
-        );
+        let current_tick = self.current_tick();
+        let send_heartbeat = match self.next_heartbeat.get_mut(&peer) {
+            Some(next_heartbeat) => {
+                if current_tick - *next_heartbeat >= Self::heartbeat_interval() {
+                    *next_heartbeat = current_tick;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                self.next_heartbeat.insert(peer, current_tick);
+                true
+            }
+        };
+
+        if send_heartbeat {
+            self.send_append_entries(
+                peer,
+                &AppendEntriesArgs {
+                    term: self.persist_state.term(),
+                    leader_id: self.me,
+                    prev_log_term: self.last_log_term(),
+                    prev_log_index: self.last_log_index(),
+                    entries: vec![],
+                    entries_term: vec![],
+                    leader_commit: self.commit_index,
+                },
+            );
+        }
     }
 
     /// sync log to peer
@@ -743,6 +765,11 @@ impl Raft {
     /// generate random election start
     fn tick_election_start_at() -> u128 {
         rand::thread_rng().gen_range::<u64>(150, 300) as u128
+    }
+
+    /// next heartbeat time
+    fn heartbeat_interval() -> u128 {
+        100
     }
 
     /// get last log index
