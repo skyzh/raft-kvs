@@ -10,11 +10,11 @@ use self::persister::*;
 use crate::proto::raftpb::*;
 use futures::sync::mpsc::UnboundedSender;
 use futures::Future;
+use fxhash::{FxHashMap, FxHashSet};
 use labrpc::RpcFuture;
 use rand::Rng;
 use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::mpsc::{channel, Sender};
@@ -168,14 +168,14 @@ pub struct Raft {
     /// for each server, index of the next log entry to send to that serve
     /// (initialized to leader last log index + 1)
     /// This is a volatile state for leaders.
-    next_index: HashMap<u64, u64>,
+    next_index: Vec<u64>,
     /// for each server, index of highest log entry known to be replicated on server
     ///(initialized to 0)
     /// This is a volatile state for leaders.
-    match_index: HashMap<u64, u64>,
+    match_index: Vec<u64>,
     /// if a node only requires a heartbeat, don't send it too frequently
     /// This is a volatile state for leaders.
-    next_heartbeat: HashMap<u64, u128>,
+    next_heartbeat: Vec<u128>,
 
     /// follower will start election after this time
     /// This is raft-kvs internal state. Should be reset when become follower.
@@ -187,7 +187,7 @@ pub struct Raft {
 
     /// number of votes a candidate gets
     /// This is raft-kvs internal state. Should be reset when become candidate.
-    vote_from: HashSet<u64>,
+    vote_from: FxHashSet<u64>,
 
     /// time of booting Raft instance
     /// This is raft-kvs internal state.
@@ -204,7 +204,10 @@ pub struct Raft {
     /// used to pair RPC request with RPC response. Will be periodically cleared.
     /// prev_log_index, current_tick, entries_length, failed attempt
     /// This is a raft-kvs internal state.
-    rpc_append_entries_log_idx: HashMap<u64, (u64, u128, u64, u64)>,
+    rpc_append_entries_log_idx: FxHashMap<u64, (u64, u128, u64, u64)>,
+
+    /// used to update RPC cache
+    cache_next_update: u128,
 
     /// apply channel
     apply_ch: UnboundedSender<ApplyMsg>,
@@ -240,17 +243,18 @@ impl Raft {
             role: Role::Follower,
             election_start_at: 0,
             election_timeout_at: 0,
-            vote_from: HashSet::new(),
+            vote_from: FxHashSet::default(),
             boot_time: Instant::now(),
             persist_state: PersistState::new(persist_core),
             rpc_sequence: Default::default(),
             commit_index: 0,
             last_applied: 0,
-            next_index: HashMap::new(),
-            match_index: HashMap::new(),
-            rpc_append_entries_log_idx: HashMap::new(),
+            next_index: Vec::new(),
+            match_index: Vec::new(),
+            rpc_append_entries_log_idx: FxHashMap::default(),
             rpc_channel_tx: None,
-            next_heartbeat: HashMap::new(),
+            next_heartbeat: Vec::new(),
+            cache_next_update: 0,
             apply_ch,
         };
 
@@ -302,14 +306,13 @@ impl Raft {
         );
         self.role = Role::Leader;
         // initialize leader-related data structure
-        self.match_index = HashMap::new();
-        self.next_index = HashMap::new();
-        for peer in 0..self.peers.len() {
-            let peer = peer as u64;
-            if peer != self.me {
-                self.match_index.insert(peer, 0);
-                self.next_index.insert(peer, self.last_log_index() + 1);
-            }
+        self.match_index = Vec::new();
+        self.next_index = Vec::new();
+        self.next_heartbeat = Vec::new();
+        for _ in 0..self.peers.len() {
+            self.next_heartbeat.push(self.current_tick());
+            self.match_index.push(0);
+            self.next_index.push(self.last_log_index() + 1);
         }
         // send heartbeats to followers
         self.heartbeats();
@@ -319,7 +322,7 @@ impl Raft {
     fn begin_election(&mut self) {
         *self.persist_state.voted_for_mut() = Some(self.me);
         self.vote_from = {
-            let mut hashset = HashSet::new();
+            let mut hashset = FxHashSet::default();
             hashset.insert(self.me);
             hashset
         };
@@ -427,8 +430,8 @@ impl Raft {
 
     /// commit log if agree by majority of followers
     fn try_commit(&mut self) {
-        let mut latest_match: Vec<u64> = self.match_index.iter().map(|x| *x.1).collect();
-        latest_match.push(self.last_log_index());
+        let mut latest_match: Vec<u64> = self.match_index.clone();
+        latest_match[self.me as usize] = self.last_log_index();
         latest_match.sort();
         let commit_idx = latest_match[self.peers.len() / 2]; // 4 -> 2, 5 -> 2
         info!("@{} match index {:?}", self.me, self.match_index);
@@ -471,19 +474,12 @@ impl Raft {
     /// send heartbeat to peer
     fn heartbeat(&mut self, peer: u64) {
         let current_tick = self.current_tick();
-        let send_heartbeat = match self.next_heartbeat.get_mut(&peer) {
-            Some(next_heartbeat) => {
-                if current_tick - *next_heartbeat >= Self::heartbeat_interval() {
-                    *next_heartbeat = current_tick;
-                    true
-                } else {
-                    false
-                }
-            }
-            None => {
-                self.next_heartbeat.insert(peer, current_tick);
-                true
-            }
+        let next_heartbeat = &mut self.next_heartbeat[peer as usize];
+        let send_heartbeat = if current_tick - *next_heartbeat >= Self::heartbeat_interval() {
+            *next_heartbeat = current_tick;
+            true
+        } else {
+            false
         };
 
         if send_heartbeat {
@@ -504,7 +500,7 @@ impl Raft {
 
     /// sync log to peer
     fn sync_log_with(&mut self, peer: u64, failed_attempt: u64) {
-        let next_idx = *self.next_index.get(&peer).unwrap();
+        let next_idx = self.next_index[peer as usize];
         if self.last_log_index() < next_idx {
             self.heartbeat(peer);
             return;
@@ -574,11 +570,14 @@ impl Raft {
     /// update RPC request-response pairing cache
     fn update_rpc_cache(&mut self) {
         let current_tick = self.current_tick();
-        let expired = std::mem::replace(&mut self.rpc_append_entries_log_idx, HashMap::new());
-        for (req, (idx, timestamp, length, failed_attempt)) in expired.into_iter() {
-            if timestamp + 10000 >= current_tick {
-                self.rpc_append_entries_log_idx
-                    .insert(req, (idx, timestamp, length, failed_attempt));
+        if current_tick > self.cache_next_update {
+            self.cache_next_update = current_tick + 1000;
+            let expired = std::mem::take(&mut self.rpc_append_entries_log_idx);
+            for (req, (idx, timestamp, length, failed_attempt)) in expired.into_iter() {
+                if timestamp + 3000 >= current_tick {
+                    self.rpc_append_entries_log_idx
+                        .insert(req, (idx, timestamp, length, failed_attempt));
+                }
             }
         }
     }
@@ -620,11 +619,13 @@ impl Raft {
     }
 
     fn debug_log(&self) {
-        let mut x = String::new();
-        for (term, log) in self.persist_state.log().iter() {
-            x += format!("{} {} ({:?}), ", term, log.len(), log).as_ref();
+        if log_enabled!(log::Level::Debug) {
+            let mut x = String::new();
+            for (term, log) in self.persist_state.log().iter() {
+                x += format!("{} {} ({:?}), ", term, log.len(), log).as_ref();
+            }
+            debug!("@{} commit={} log={}", self.me, self.commit_index, x);
         }
-        debug!("@{} commit={} log={}", self.me, self.commit_index, x);
     }
 
     /// proceess append entries rpc
@@ -724,8 +725,8 @@ impl Raft {
             let failed_attempt = *failed_attempt;
             self.rpc_append_entries_log_idx.remove(&rpc_id);
             if reply.success {
-                *self.match_index.get_mut(&from).unwrap() = prev_match_index + length;
-                *self.next_index.get_mut(&from).unwrap() = prev_match_index + length + 1;
+                self.match_index[from as usize] = prev_match_index + length;
+                self.next_index[from as usize] = prev_match_index + length + 1;
                 self.try_commit();
             } else {
                 let subtract_size = 2_u64.pow(failed_attempt as u32) - 1;
@@ -734,7 +735,7 @@ impl Raft {
                 } else {
                     0
                 };
-                *self.next_index.get_mut(&from).unwrap() = prev_match_index.max(1);
+                self.next_index[from as usize] = prev_match_index.max(1);
                 self.sync_log_with(from, failed_attempt + 1);
                 debug!(
                     "@{} -> {} append failed, prev_match_index={}, from={}, attempt={}",
@@ -888,7 +889,6 @@ impl Node {
     /// a VIRTUAL crash in tester, so take care of background
     /// threads you generated with this Raft Node.
     pub fn kill(&self) {
-        self.raft.lock().unwrap().persist();
         self.cancel.store(true, SeqCst);
     }
 }

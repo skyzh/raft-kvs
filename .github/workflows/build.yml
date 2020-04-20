@@ -14,8 +14,8 @@ jobs:
       - uses: actions-rs/cargo@v1
       - name: install components
         run: rustup component add rustfmt clippy
-      - name: build
-        run: cargo build $CARGO_FLAG --all-features
+      - name: check
+        run: make check
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2a
