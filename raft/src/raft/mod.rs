@@ -802,6 +802,7 @@ pub struct Node {
     cancel: Arc<AtomicBool>,
     ticker: Arc<Option<JoinHandle<()>>>,
     poll_ticker: Arc<Option<JoinHandle<()>>>,
+    executor: futures_cpupool::CpuPool
 }
 
 impl Node {
@@ -816,6 +817,7 @@ impl Node {
             cancel,
             ticker: Arc::new(None),
             poll_ticker: Arc::new(None),
+            executor:  futures_cpupool::CpuPool::new_num_cpus()
         };
         let cancel = node.cancel.clone();
         let raft = node.raft.clone();
@@ -901,12 +903,18 @@ impl Drop for Node {
 
 impl RaftService for Node {
     fn request_vote(&self, args: RequestVoteArgs) -> RpcFuture<RequestVoteReply> {
-        let mut raft = self.raft.lock().unwrap();
-        raft.on_rpc_request_vote(args)
+        let raft = self.raft.clone();
+        Box::new(self.executor.spawn_fn(move || {
+            let mut raft = raft.lock().unwrap();
+            raft.on_rpc_request_vote(args)
+        }))
     }
 
     fn append_entries(&self, args: AppendEntriesArgs) -> RpcFuture<AppendEntriesReply> {
-        let mut raft = self.raft.lock().unwrap();
-        raft.on_rpc_append_entries(args)
+        let raft = self.raft.clone();
+        Box::new(self.executor.spawn_fn(move || {
+            let mut raft = raft.lock().unwrap();
+            raft.on_rpc_append_entries(args)
+        }))
     }
 }

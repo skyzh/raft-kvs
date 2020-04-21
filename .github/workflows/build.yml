@@ -18,6 +18,10 @@ jobs:
         run: make check
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
+      - name: build
+        run: make build
+        env:
+          CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2a
         run: LOG_LEVEL=raft=warn make test_2a
         env:
