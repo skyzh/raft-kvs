@@ -1,6 +1,9 @@
 use std::fmt;
 
 use crate::proto::kvraftpb::*;
+use futures::Future;
+use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 enum Op {
     Put(String, String),
@@ -10,7 +13,7 @@ enum Op {
 pub struct Clerk {
     pub name: String,
     pub servers: Vec<KvClient>,
-    // You will have to modify this struct.
+    leader: Arc<Mutex<u64>>,
 }
 
 impl fmt::Debug for Clerk {
@@ -21,9 +24,7 @@ impl fmt::Debug for Clerk {
 
 impl Clerk {
     pub fn new(name: String, servers: Vec<KvClient>) -> Clerk {
-        // You'll have to add code here.
-        // Clerk { name, servers }
-        crate::your_code_here((name, servers))
+        Self { name, servers, leader: Arc::new(Mutex::new(0)) }
     }
 
     /// fetch the current value for a key.
@@ -33,8 +34,20 @@ impl Clerk {
     // you can send an RPC with code like this:
     // if let Some(reply) = self.servers[i].get(args).wait() { /* do something */ }
     pub fn get(&self, key: String) -> String {
-        // You will have to modify this function.
-        crate::your_code_here(key)
+        let leader = *self.leader.lock().unwrap();
+        let arg = GetRequest { key };
+        for idx in 0..=self.servers.len() {
+            let server = if idx == 0 {
+                &self.servers[leader as usize]
+            } else {
+                &self.servers[idx - 1]
+            };
+            if let Ok(reply) = server.get(&arg).wait() {
+                return reply.value;
+            }
+        }
+        info!("key not found");
+        "".to_string()
     }
 
     /// shared by Put and Append.
@@ -42,8 +55,35 @@ impl Clerk {
     // you can send an RPC with code like this:
     // let reply = self.servers[i].put_append(args).unwrap();
     fn put_append(&self, op: Op) {
-        // You will have to modify this function.
-        crate::your_code_here(op)
+        let leader = *self.leader.lock().unwrap();
+        let arg = match op {
+            Op::Put(key, value) => PutAppendRequest {
+                key,
+                value,
+                op: crate::proto::kvraftpb::Op::Put as i32,
+            },
+            Op::Append(key, value) => PutAppendRequest {
+                key,
+                value,
+                op: crate::proto::kvraftpb::Op::Append as i32,
+            },
+        };
+        loop {
+            for idx in 0..=self.servers.len() {
+                let server = if idx == 0 {
+                    &self.servers[leader as usize]
+                } else {
+                    &self.servers[idx - 1]
+                };
+                if let Ok(reply) = server.put_append(&arg).wait() {
+                    if !reply.wrong_leader && reply.err == "" {
+                        if idx != 0 { *self.leader.lock().unwrap() = idx as u64 - 1; }
+                        return;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     pub fn put(&self, key: String, value: String) {

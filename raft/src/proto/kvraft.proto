@@ -32,3 +32,14 @@ message GetReply {
     string err = 2;
     string value = 3;
 }
+
+enum LogOp {
+    Get = 0;
+    PutAppend = 1;
+}
+
+message KvLog {
+    LogOp op = 1;
+    string key = 2;
+    string value = 3;
+}

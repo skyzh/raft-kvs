@@ -885,12 +885,12 @@ impl Node {
 
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
-        self.raft.lock().unwrap().persist_state.term()
+        self.get_state().term()
     }
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        self.raft.lock().unwrap().role == Role::Leader
+        self.get_state().is_leader()
     }
 
     /// The current state of this peer.
@@ -916,12 +916,6 @@ impl Node {
 
     pub fn believed_leader(&self) -> Option<u64> {
         self.raft.lock().unwrap().believed_leader()
-    }
-}
-
-impl Drop for Node {
-    fn drop(&mut self) {
-        // self.cancel.store(true, SeqCst);
     }
 }
 

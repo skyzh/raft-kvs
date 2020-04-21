@@ -27,7 +27,7 @@ test_3b: cargo_test_3b
 build:
 	cargo build $(CARGO_FLAG)
 
-cargo_test_%: check
+cargo_test_%: # check
 	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG) -p raft -- --nocapture --test $*
 
 test_others: check
