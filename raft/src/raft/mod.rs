@@ -802,7 +802,7 @@ pub struct Node {
     cancel: Arc<AtomicBool>,
     ticker: Arc<Option<JoinHandle<()>>>,
     poll_ticker: Arc<Option<JoinHandle<()>>>,
-    executor: futures_cpupool::CpuPool
+    executor: futures_cpupool::CpuPool,
 }
 
 impl Node {
@@ -817,7 +817,7 @@ impl Node {
             cancel,
             ticker: Arc::new(None),
             poll_ticker: Arc::new(None),
-            executor:  futures_cpupool::CpuPool::new_num_cpus()
+            executor: futures_cpupool::CpuPool::new_num_cpus(),
         };
         let cancel = node.cancel.clone();
         let raft = node.raft.clone();
