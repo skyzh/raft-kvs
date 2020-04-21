@@ -211,6 +211,9 @@ pub struct Raft {
 
     /// apply channel
     apply_ch: UnboundedSender<ApplyMsg>,
+
+    /// last known leader
+    lst_leader: Option<u64>,
 }
 
 impl Raft {
@@ -256,6 +259,7 @@ impl Raft {
             next_heartbeat: Vec::new(),
             cache_next_update: 0,
             apply_ch,
+            lst_leader: None,
         };
 
         // initialize from state persisted before a crash
@@ -634,12 +638,19 @@ impl Raft {
             self.as_follower();
             *self.persist_state.term_mut() = args.term;
         }
+        if args.term < self.persist_state.term() {
+            return Box::new(futures::future::ok(AppendEntriesReply {
+                term: self.persist_state.term(),
+                success: false,
+            }));
+        }
         // degrade to follower if there's a leader
         if self.role == Role::Candidate && args.term == self.persist_state.term() {
             self.as_follower();
         }
         let reply = match self.role {
             Role::Follower => {
+                self.lst_leader = Some(args.leader_id);
                 self.election_start_at = self.current_tick() + Self::tick_election_start_at();
 
                 let mut ok = false;
@@ -793,6 +804,15 @@ impl Raft {
             self.persist_state.log()[id as usize - 1].0
         }
     }
+
+    /// get who is believed to be leader
+    fn believed_leader(&self) -> Option<u64> {
+        if self.role == Role::Leader {
+            Some(self.me)
+        } else {
+            self.lst_leader
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -892,6 +912,10 @@ impl Node {
     /// threads you generated with this Raft Node.
     pub fn kill(&self) {
         self.cancel.store(true, SeqCst);
+    }
+
+    pub fn believed_leader(&self) -> Option<u64> {
+        self.raft.lock().unwrap().believed_leader()
     }
 }
 
