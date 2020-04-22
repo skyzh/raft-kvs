@@ -5,12 +5,10 @@ use labrpc::RpcFuture;
 use crate::proto::kvraftpb::*;
 use crate::raft;
 use crate::raft::ApplyMsg;
-use futures::future::FutureResult;
 use futures::sync::oneshot;
-use futures::{Async, Future, Poll, Stream};
+use futures::{Future, Stream};
 use fxhash::FxHashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 pub struct KvServer {
     pub rf: raft::Node,
@@ -18,7 +16,7 @@ pub struct KvServer {
     maxraftstate: Option<usize>,
     apply_ch: Option<UnboundedReceiver<ApplyMsg>>,
     kvstore: FxHashMap<String, String>,
-    apply_queue: FxHashMap<u64, (oneshot::Sender<bool>, KvLog)>,
+    apply_queue: FxHashMap<u64, (oneshot::Sender<Option<String>>, KvLog)>,
 }
 
 impl KvServer {
@@ -49,31 +47,53 @@ impl KvServer {
 pub type OpFuture<T, E> = Box<dyn Future<Item = T, Error = E> + Send + 'static>;
 
 impl KvServer {
-    fn op(&mut self, op: KvLog) -> OpFuture<bool, String> {
+    fn op(&mut self, op: KvLog) -> OpFuture<String, String> {
         match self.rf.start(&op) {
             Ok((idx, _)) => {
                 let (tx, rx) = oneshot::channel();
                 let out = self.apply_queue.insert(idx, (tx, op));
                 if let Some((tx, _)) = out {
-                    tx.send(false).unwrap();
+                    tx.send(None).unwrap();
                 }
-                let me = self.me;
                 Box::new(
-                    rx.map(move |x| {
-                        info!("@{} commit: {}", me, idx);
-                        x
-                    })
-                    .map_err(|_| "error while waiting for commit".to_string()),
+                    rx.map_err(|_| "error while waiting for commit".to_string())
+                        .and_then(move |result| {
+                            if let Some(value) = result {
+                                futures::future::ok(value)
+                            } else {
+                                futures::future::err("unmatched log".to_string())
+                            }
+                        }),
                 )
             }
             Err(raft::errors::Error::NotLeader) => {
-                info!("error when append entries: not leader");
+                trace!("error when append entries: not leader");
                 Box::new(futures::future::err("not leader".to_string()))
             }
             Err(e) => {
-                info!("error when append entries: {:?}", e);
+                trace!("error when append entries: {:?}", e);
                 Box::new(futures::future::err(e.to_string()))
             }
+        }
+    }
+
+    fn apply_log(&mut self, log: KvLog) -> Option<String> {
+        if log.op == LogOp::Put as i32 {
+            self.kvstore.insert(log.key, log.value);
+            None
+        } else if log.op == LogOp::Append as i32 {
+            let value = self.kvstore.remove(&log.key).unwrap_or("".to_string());
+            let value = value + &log.value;
+            self.kvstore.insert(log.key, value);
+            None
+        } else {
+            trace!("@{} log={:?} kv={:?}", self.me, log, self.kvstore);
+            Some(
+                self.kvstore
+                    .get(&log.key)
+                    .unwrap_or(&"".to_string())
+                    .to_owned(),
+            )
         }
     }
 }
@@ -89,33 +109,35 @@ impl Node {
         let apply_ch = kv.get_apply_channel().unwrap();
         let me = kv.me;
         let server = Arc::new(Mutex::new(kv));
-        let mut node = Self {
+        let node = Self {
             server: server.clone(),
             executor: futures_cpupool::CpuPool::new_num_cpus(),
         };
 
         std::thread::spawn(move || {
-            info!("@{} looping...", me);
+            info!("@{} start applying", me);
             apply_ch
                 .for_each(|x| {
                     {
                         let mut server = server.lock().unwrap();
-                        // info!("@{} apply {}", server.me, x.command_index);
-                        match server.apply_queue.remove(&x.command_index) {
-                            Some((tx, log_sent)) => {
-                                let mut log_sent_encoded = vec![];
-                                labcodec::encode(&log_sent, &mut log_sent_encoded).unwrap();
-                                tx.send(x.command == log_sent_encoded);
-                            }
-                            None => {
-                                // info!("@{} failed to apply {}", me, x.command_index);
+                        if let Some((tx, log_sent)) = server.apply_queue.remove(&x.command_index) {
+                            let mut log_sent_encoded = vec![];
+                            labcodec::encode(&log_sent, &mut log_sent_encoded).unwrap();
+                            if x.command == log_sent_encoded {
+                                debug!("@{} applying {}", server.me, x.command_index);
+                                let value = server.apply_log(log_sent).unwrap_or("".to_string());
+                                tx.send(Some(value)).unwrap();
+                            } else {
+                                tx.send(None).unwrap();
                             }
                         }
                     }
+                    std::thread::yield_now();
                     Ok(())
                 })
-                .wait();
-            info!("@{} exit", me);
+                .wait()
+                .ok();
+            info!("@{} stop apply", me);
         });
 
         node
@@ -126,12 +148,7 @@ impl Node {
     /// in kill(), but it might be convenient to (for example)
     /// turn off debug output from this instance.
     pub fn kill(&self) {
-        // If you want to free some resources by `raft::Node::kill` method,
-        // you should call `raft::Node::kill` here also to prevent resource leaking.
-        // Since the test framework will call kvraft::Node::kill only.
-        // self.server.kill();
-
-        // Your code here, if desired.
+        self.server.lock().unwrap().rf.kill();
     }
 
     /// The current term of this peer.
@@ -147,62 +164,85 @@ impl Node {
     pub fn get_state(&self) -> raft::State {
         self.server.lock().unwrap().rf.get_state()
     }
+
+    fn op_to_log_op(x: i32) -> i32 {
+        if x == Op::Put as i32 {
+            LogOp::Put as i32
+        } else if x == Op::Append as i32 {
+            LogOp::Append as i32
+        } else {
+            x
+        }
+    }
 }
 
 impl KvService for Node {
     fn get(&self, arg: GetRequest) -> RpcFuture<GetReply> {
-        let message = {
-            let mut server = self.server.lock().unwrap();
-            info!("@{} get {:?}", server.me, arg);
-            server
-                .op(KvLog {
+        let server = self.server.clone();
+        Box::new(self.executor.spawn_fn(move || {
+            {
+                let mut server = server.lock().unwrap();
+                trace!("@{} get {:?}", server.me, arg);
+                server.op(KvLog {
                     key: arg.key,
                     value: "".to_string(),
                     op: LogOp::Get as i32,
                 })
-                .map_err(|_| labrpc::Error::Stopped)
-        };
-        Box::new(message.map(|x| {
-            if x {
-                GetReply {
-                    err: "".to_string(),
-                    value: "here".to_string(),
-                    wrong_leader: false,
-                }
-            } else {
-                GetReply {
-                    err: "true".to_string(),
-                    value: "".to_string(),
-                    wrong_leader: false,
-                }
             }
+            .map(|value| GetReply {
+                err: "".to_string(),
+                value,
+                wrong_leader: false,
+            })
+            .or_else(|err| {
+                let err_str = err.to_string();
+                if err_str == "not leader" {
+                    futures::future::ok(GetReply {
+                        err: err_str,
+                        value: "".to_string(),
+                        wrong_leader: true,
+                    })
+                } else {
+                    futures::future::ok(GetReply {
+                        err: err.to_string(),
+                        value: "".to_string(),
+                        wrong_leader: false,
+                    })
+                }
+            })
         }))
     }
 
     fn put_append(&self, arg: PutAppendRequest) -> RpcFuture<PutAppendReply> {
-        let message = {
-            let mut server = self.server.lock().unwrap();
-            info!("@{} put {:?}", server.me, arg);
-            server
-                .op(KvLog {
+        let server = self.server.clone();
+        Box::new(self.executor.spawn_fn(move || {
+            {
+                let mut server = server.lock().unwrap();
+                trace!("@{} put {:?}", server.me, arg);
+                server.op(KvLog {
                     key: arg.key,
                     value: arg.value,
-                    op: LogOp::PutAppend as i32,
+                    op: Self::op_to_log_op(arg.op),
                 })
-                .map_err(|_| labrpc::Error::Stopped)
-        };
-        Box::new(message.map(|x| {
-            if x {
-                PutAppendReply {
-                    err: "".to_string(),
-                    wrong_leader: false,
-                }
-            } else {
-                PutAppendReply {
-                    err: "true".to_string(),
-                    wrong_leader: false,
-                }
             }
+            .map(|_| PutAppendReply {
+                err: "".to_string(),
+                wrong_leader: false,
+            })
+            .or_else(|err| {
+                let err_str = err.to_string();
+                if err_str == "not leader" {
+                    futures::future::ok(PutAppendReply {
+                        err: err_str,
+                        wrong_leader: true,
+                    })
+                } else {
+                    futures::future::ok(PutAppendReply {
+                        err: err.to_string(),
+                        wrong_leader: false,
+                    })
+                }
+            })
         }))
     }
 }

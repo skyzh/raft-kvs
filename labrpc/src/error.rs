@@ -11,6 +11,7 @@ pub enum Error {
     Recv(Canceled),
     Timeout,
     Stopped,
+    IOError(String),
     Other(String),
 }
 

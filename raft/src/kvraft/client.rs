@@ -2,8 +2,11 @@ use std::fmt;
 
 use crate::proto::kvraftpb::*;
 use futures::Future;
+use futures_timer::FutureExt;
+use std::io::Error;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
 
 enum Op {
     Put(String, String),
@@ -13,7 +16,7 @@ enum Op {
 pub struct Clerk {
     pub name: String,
     pub servers: Vec<KvClient>,
-    leader: Arc<Mutex<u64>>,
+    leader: Arc<AtomicUsize>,
 }
 
 impl fmt::Debug for Clerk {
@@ -24,30 +27,70 @@ impl fmt::Debug for Clerk {
 
 impl Clerk {
     pub fn new(name: String, servers: Vec<KvClient>) -> Clerk {
-        Self { name, servers, leader: Arc::new(Mutex::new(0)) }
+        Self {
+            name,
+            servers,
+            leader: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
-    /// fetch the current value for a key.
-    /// returns "" if the key does not exist.
-    /// keeps trying forever in the face of all other errors.
-    //
-    // you can send an RPC with code like this:
-    // if let Some(reply) = self.servers[i].get(args).wait() { /* do something */ }
-    pub fn get(&self, key: String) -> String {
-        let leader = *self.leader.lock().unwrap();
-        let arg = GetRequest { key };
-        for idx in 0..=self.servers.len() {
-            let server = if idx == 0 {
-                &self.servers[leader as usize]
+    pub fn get_from_server(&self, idx: usize, arg: &GetRequest) -> Option<String> {
+        debug!("->{} get", idx);
+        let server = &self.servers[idx];
+        if let Ok(reply) = server
+            .get(arg)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            .timeout(Duration::from_secs(1))
+            .wait()
+        {
+            if !reply.wrong_leader && reply.err == "" {
+                Some(reply.value)
             } else {
-                &self.servers[idx - 1]
-            };
-            if let Ok(reply) = server.get(&arg).wait() {
-                return reply.value;
+                debug!("->{} {}", idx, reply.err);
+                None
             }
+        } else {
+            debug!("->{} timeout", idx);
+            None
         }
-        info!("key not found");
-        "".to_string()
+    }
+
+    pub fn put_append_to_server(&self, idx: usize, arg: &PutAppendRequest) -> Option<()> {
+        debug!("->{} put append", idx);
+        let server = &self.servers[idx];
+        if let Ok(reply) = server
+            .put_append(arg)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            .timeout(Duration::from_secs(1))
+            .wait()
+        {
+            if !reply.wrong_leader && reply.err == "" {
+                Some(())
+            } else {
+                debug!("->{} {}", idx, reply.err);
+                None
+            }
+        } else {
+            debug!("->{} timeout", idx);
+            None
+        }
+    }
+
+    pub fn get(&self, key: String) -> String {
+        let arg = GetRequest { key };
+        let leader = self.leader.load(Ordering::SeqCst);
+        if let Some(x) = self.get_from_server(leader, &arg) {
+            return x;
+        }
+        loop {
+            for idx in 0..self.servers.len() {
+                if let Some(x) = self.get_from_server(idx, &arg) {
+                    self.leader.store(idx, Ordering::SeqCst);
+                    return x;
+                }
+            }
+            std::thread::yield_now();
+        }
     }
 
     /// shared by Put and Append.
@@ -55,7 +98,6 @@ impl Clerk {
     // you can send an RPC with code like this:
     // let reply = self.servers[i].put_append(args).unwrap();
     fn put_append(&self, op: Op) {
-        let leader = *self.leader.lock().unwrap();
         let arg = match op {
             Op::Put(key, value) => PutAppendRequest {
                 key,
@@ -68,21 +110,18 @@ impl Clerk {
                 op: crate::proto::kvraftpb::Op::Append as i32,
             },
         };
+        let leader = self.leader.load(Ordering::SeqCst);
+        if let Some(_) = self.put_append_to_server(leader, &arg) {
+            return;
+        }
         loop {
-            for idx in 0..=self.servers.len() {
-                let server = if idx == 0 {
-                    &self.servers[leader as usize]
-                } else {
-                    &self.servers[idx - 1]
-                };
-                if let Ok(reply) = server.put_append(&arg).wait() {
-                    if !reply.wrong_leader && reply.err == "" {
-                        if idx != 0 { *self.leader.lock().unwrap() = idx as u64 - 1; }
-                        return;
-                    }
+            for idx in 0..self.servers.len() {
+                if let Some(_) = self.put_append_to_server(idx, &arg) {
+                    self.leader.store(idx, Ordering::SeqCst);
+                    return;
                 }
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::yield_now();
         }
     }
 

@@ -210,7 +210,7 @@ pub struct Raft {
     cache_next_update: u128,
 
     /// apply channel
-    apply_ch: UnboundedSender<ApplyMsg>,
+    apply_ch: Option<UnboundedSender<ApplyMsg>>,
 
     /// last known leader
     lst_leader: Option<u64>,
@@ -258,7 +258,7 @@ impl Raft {
             rpc_channel_tx: None,
             next_heartbeat: Vec::new(),
             cache_next_update: 0,
-            apply_ch,
+            apply_ch: Some(apply_ch),
             lst_leader: None,
         };
 
@@ -438,13 +438,13 @@ impl Raft {
         latest_match[self.me as usize] = self.last_log_index();
         latest_match.sort();
         let commit_idx = latest_match[self.peers.len() / 2]; // 4 -> 2, 5 -> 2
-        info!("@{} match index {:?}", self.me, self.match_index);
+        debug!("@{} match index {:?}", self.me, self.match_index);
         if commit_idx > 0
             && commit_idx > self.commit_index
             && self.persist_state.log()[commit_idx as usize - 1].0 == self.persist_state.term()
         {
             self.commit_index = commit_idx;
-            info!(
+            debug!(
                 "@{} leader commit {:?}=>{}",
                 self.me, self.match_index, self.commit_index
             );
@@ -456,6 +456,8 @@ impl Raft {
     fn apply_message(&mut self) {
         for idx in self.last_applied + 1..=self.commit_index {
             self.apply_ch
+                .as_ref()
+                .unwrap()
                 .unbounded_send(ApplyMsg {
                     command_valid: true,
                     command_index: idx,
@@ -623,12 +625,12 @@ impl Raft {
     }
 
     fn debug_log(&self) {
-        if log_enabled!(log::Level::Debug) {
+        if log_enabled!(log::Level::Trace) {
             let mut x = String::new();
             for (term, log) in self.persist_state.log().iter() {
                 x += format!("{} {} ({:?}), ", term, log.len(), log).as_ref();
             }
-            debug!("@{} commit={} log={}", self.me, self.commit_index, x);
+            trace!("@{} commit={} log={}", self.me, self.commit_index, x);
         }
     }
 
@@ -655,13 +657,13 @@ impl Raft {
 
                 let mut ok = false;
                 if args.term < self.persist_state.term() {
-                    debug!("@{} append entries failed: lower term", self.me);
+                    trace!("@{} append entries failed: lower term", self.me);
                 } else if args.prev_log_index > self.last_log_index() {
-                    debug!("@{} append entries failed: log not found", self.me);
+                    trace!("@{} append entries failed: log not found", self.me);
                 } else if self.log_term_of(args.prev_log_index) == args.prev_log_term {
                     ok = true;
                 } else {
-                    debug!("@{} append entries failed: term not match", self.me);
+                    trace!("@{} append entries failed: term not match", self.me);
                 }
                 if ok {
                     let log_entries = self.persist_state.log_mut();
@@ -677,7 +679,7 @@ impl Raft {
                             if log_entries[log_idx].0 != log.0 {
                                 log_entries.drain(log_idx..);
                                 log_entries.push(log);
-                                info!("@{} drain log {}", self.me, log_entries.len());
+                                trace!("@{} drain log {}", self.me, log_entries.len());
                             } else {
                                 log_entries[log_idx] = log;
                             }
@@ -685,7 +687,7 @@ impl Raft {
                             log_entries.push(log);
                         }
                     }
-                    debug!(
+                    trace!(
                         "@{} append entries success {}, {}",
                         self.me,
                         length,
@@ -828,6 +830,7 @@ pub struct Node {
 impl Node {
     /// Create a new raft service.
     pub fn new(raft: Raft) -> Node {
+        let me = raft.me;
         let raft = Arc::new(Mutex::new(raft));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = channel();
@@ -842,6 +845,7 @@ impl Node {
         let cancel = node.cancel.clone();
         let raft = node.raft.clone();
         node.ticker = Arc::new(Some(std::thread::spawn(move || {
+            info!("@{} start ticking task", me);
             while !cancel.load(SeqCst) {
                 {
                     let mut raft = raft.lock().unwrap();
@@ -849,10 +853,12 @@ impl Node {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
+            info!("@{} stop ticking task", me);
         })));
 
         let raft = node.raft.clone();
         node.poll_ticker = Arc::new(Some(std::thread::spawn(move || {
+            info!("@{} start polling rpc event", me);
             for (id, from, event) in rx.iter() {
                 {
                     let mut raft = raft.lock().unwrap();
@@ -860,6 +866,7 @@ impl Node {
                 }
                 std::thread::yield_now();
             }
+            info!("@{} stop polling rpc event", me);
         })));
         node
     }
@@ -911,6 +918,9 @@ impl Node {
     /// a VIRTUAL crash in tester, so take care of background
     /// threads you generated with this Raft Node.
     pub fn kill(&self) {
+        let mut raft = self.raft.lock().unwrap();
+        raft.apply_ch = None;
+        raft.rpc_channel_tx = None;
         self.cancel.store(true, SeqCst);
     }
 
