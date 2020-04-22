@@ -375,20 +375,23 @@ impl Raft {
 
         let rpc_id = self.rpc_sequence.send();
         let rpc_peer = &self.peers[peer as usize];
-        let tx_channel = self.rpc_channel_tx.clone().unwrap();
-        rpc_peer.spawn(
-            rpc_peer
-                .request_vote(&args)
-                .map_err(Error::Rpc)
-                .then(move |res| {
-                    if let Ok(res) = res {
-                        tx_channel
-                            .send((rpc_id, peer, RPCEvents::RequestVoteReply(res)))
-                            .ok();
-                    }
-                    Ok(())
-                }),
-        );
+        let tx_channel = self.rpc_channel_tx.clone();
+
+        if let Some(tx_channel) = tx_channel {
+            rpc_peer.spawn(
+                rpc_peer
+                    .request_vote(&args)
+                    .map_err(Error::Rpc)
+                    .then(move |res| {
+                        if let Ok(res) = res {
+                            tx_channel
+                                .send((rpc_id, peer, RPCEvents::RequestVoteReply(res)))
+                                .ok();
+                        }
+                        Ok(())
+                    }),
+            );
+        }
         rpc_id
     }
 
@@ -398,20 +401,23 @@ impl Raft {
 
         let rpc_id = self.rpc_sequence.send();
         let rpc_peer = &self.peers[peer as usize];
-        let tx_channel = self.rpc_channel_tx.clone().unwrap();
-        rpc_peer.spawn(
-            rpc_peer
-                .append_entries(&args)
-                .map_err(Error::Rpc)
-                .then(move |res| {
-                    if let Ok(res) = res {
-                        tx_channel
-                            .send((rpc_id, peer, RPCEvents::AppendEntriesReply(res)))
-                            .ok();
-                    }
-                    Ok(())
-                }),
-        );
+        let tx_channel = self.rpc_channel_tx.clone();
+
+        if let Some(tx_channel) = tx_channel {
+            rpc_peer.spawn(
+                rpc_peer
+                    .append_entries(&args)
+                    .map_err(Error::Rpc)
+                    .then(move |res| {
+                        if let Ok(res) = res {
+                            tx_channel
+                                .send((rpc_id, peer, RPCEvents::AppendEntriesReply(res)))
+                                .ok();
+                        }
+                        Ok(())
+                    }),
+            );
+        }
         rpc_id
     }
 
@@ -455,15 +461,15 @@ impl Raft {
     /// apply log message
     fn apply_message(&mut self) {
         for idx in self.last_applied + 1..=self.commit_index {
-            self.apply_ch
-                .as_ref()
-                .unwrap()
-                .unbounded_send(ApplyMsg {
-                    command_valid: true,
-                    command_index: idx,
-                    command: self.persist_state.log()[idx as usize - 1].1.clone(),
-                })
-                .unwrap();
+            if let Some(apply_ch) = self.apply_ch.as_ref() {
+                apply_ch
+                    .unbounded_send(ApplyMsg {
+                        command_valid: true,
+                        command_index: idx,
+                        command: self.persist_state.log()[idx as usize - 1].1.clone(),
+                    })
+                    .unwrap();
+            }
         }
     }
 

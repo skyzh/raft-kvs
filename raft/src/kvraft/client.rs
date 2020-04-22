@@ -4,7 +4,6 @@ use crate::proto::kvraftpb::*;
 use futures::Future;
 use futures_timer::FutureExt;
 use rand::Rng;
-use std::io::Error;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,7 +34,7 @@ impl Clerk {
             servers,
             leader: Arc::new(AtomicUsize::new(0)),
             client_id: rand::thread_rng().gen(),
-            request_seq: Arc::new(AtomicU64::new(0)),
+            request_seq: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -49,7 +48,6 @@ impl Clerk {
             .wait()
         {
             if !reply.wrong_leader && reply.err == "" {
-                info!("get <- {} {}", idx, reply.value);
                 Some(reply.value)
             } else {
                 debug!("->{} {}", idx, reply.err);
@@ -94,8 +92,8 @@ impl Clerk {
                     self.leader.store(idx, Ordering::SeqCst);
                     return x;
                 }
+                std::thread::yield_now();
             }
-            std::thread::yield_now();
         }
     }
 
@@ -134,8 +132,8 @@ impl Clerk {
                     self.leader.store(idx, Ordering::SeqCst);
                     return;
                 }
+                std::thread::yield_now();
             }
-            std::thread::yield_now();
         }
     }
 

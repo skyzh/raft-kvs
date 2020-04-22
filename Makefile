@@ -40,7 +40,7 @@ test_percolator: check
 	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p percolator -- --nocapture
 
 test_alex: FORCE
-	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p raft --lib tests::test_many_partitions_one_client_3a -- --nocapture
+	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p raft --lib tests::test_persist_partition_unreliable_linearizable_3a -- --nocapture
 
 .PHONY: FORCE
 FORCE:

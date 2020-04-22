@@ -15,7 +15,8 @@ pub struct KvServer {
     me: usize,
     maxraftstate: Option<usize>,
     apply_ch: Option<UnboundedReceiver<ApplyMsg>>,
-    kvstore: FxHashMap<String, (String, FxHashSet<(u64, u64)>)>,
+    kvstore: FxHashMap<String, String>,
+    client_store: FxHashMap<u64, u64>,
     apply_queue: FxHashMap<u64, (oneshot::Sender<Option<String>>, KvLog)>,
 }
 
@@ -36,6 +37,7 @@ impl KvServer {
             me,
             apply_ch: Some(apply_ch),
             kvstore: FxHashMap::default(),
+            client_store: FxHashMap::default(),
             apply_queue: FxHashMap::default(),
         }
     }
@@ -78,31 +80,30 @@ impl KvServer {
     }
 
     fn apply_log(&mut self, log: KvLog) -> Option<String> {
-        if log.op == LogOp::Put as i32 {
-            self.kvstore
-                .insert(log.key, (log.value, FxHashSet::default()));
-            None
-        } else if log.op == LogOp::Append as i32 {
-            let (mut value, mut hashset) = self
-                .kvstore
-                .remove(&log.key)
-                .unwrap_or((String::new(), FxHashSet::default()));
-            if !hashset.contains(&(log.client_id, log.request_id)) {
-                value += &log.value;
-                hashset.insert((log.client_id, log.request_id));
-            }
-            let key = log.key.clone();
-            self.kvstore.insert(log.key, (value, hashset));
-            trace!("@{} log={:?} kv={:?}", self.me, key, self.kvstore);
-            None
-        } else {
+        if log.op == LogOp::Get as i32 {
             Some(match self.kvstore.get(&log.key) {
-                Some((v, _)) => {
-                    info!("@{} {}={}", self.me, log.key, v);
+                Some(v) => {
+                    trace!("@{} {}={}", self.me, log.key, v);
                     v.clone()
                 }
                 None => String::new(),
             })
+        } else {
+            let seq = self.client_store.entry(log.client_id).or_insert(0);
+            if log.request_id > *seq {
+                *seq = log.request_id;
+                if log.op == LogOp::Put as i32 {
+                    self.kvstore.insert(log.key, log.value);
+                } else if log.op == LogOp::Append as i32 {
+                    let entry = self
+                        .kvstore
+                        .entry(log.key.clone())
+                        .or_insert_with(String::new);
+                    *entry += &log.value;
+                }
+                trace!("@{} kv={:?}", self.me, self.kvstore);
+            }
+            None
         }
     }
 }
@@ -137,11 +138,11 @@ impl Node {
                         if let Some((tx, log_sent)) = server.apply_queue.remove(&x.command_index) {
                             let mut log_sent_encoded = vec![];
                             labcodec::encode(&log_sent, &mut log_sent_encoded).unwrap();
-                            if x.command == log_sent_encoded {
+                            if server.rf.is_leader() && x.command == log_sent_encoded {
                                 debug!("@{} responding {}", server.me, x.command_index);
-                                tx.send(Some(value)).unwrap();
+                                tx.send(Some(value)).ok();
                             } else {
-                                tx.send(None).unwrap();
+                                tx.send(None).ok();
                             }
                         }
                     }
