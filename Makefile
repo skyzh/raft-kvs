@@ -27,8 +27,11 @@ test_3b: cargo_test_3b
 build:
 	cargo build $(CARGO_FLAG)
 
-cargo_test_%: # check
+cargo_test_%: check
 	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG) -p raft -- --nocapture --test $*
+
+ci_cargo_test_%:
+    RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG) -p raft -- --nocapture --test $*
 
 test_others: check
 	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p labrpc -p labcodec -- --nocapture
@@ -37,7 +40,7 @@ test_percolator: check
 	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p percolator -- --nocapture
 
 test_alex: FORCE
-	RUST_LOG=raft=debug cargo test $(CARGO_FLAG)  -p raft --lib tests::test_many_partitions_one_client_3a -- --nocapture
+	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p raft --lib tests::test_many_partitions_one_client_3a -- --nocapture
 
 .PHONY: FORCE
 FORCE:

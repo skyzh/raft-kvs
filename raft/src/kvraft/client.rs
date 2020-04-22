@@ -3,8 +3,9 @@ use std::fmt;
 use crate::proto::kvraftpb::*;
 use futures::Future;
 use futures_timer::FutureExt;
+use rand::Rng;
 use std::io::Error;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +18,8 @@ pub struct Clerk {
     pub name: String,
     pub servers: Vec<KvClient>,
     leader: Arc<AtomicUsize>,
+    client_id: u64,
+    request_seq: Arc<AtomicU64>,
 }
 
 impl fmt::Debug for Clerk {
@@ -31,6 +34,8 @@ impl Clerk {
             name,
             servers,
             leader: Arc::new(AtomicUsize::new(0)),
+            client_id: rand::thread_rng().gen(),
+            request_seq: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -44,6 +49,7 @@ impl Clerk {
             .wait()
         {
             if !reply.wrong_leader && reply.err == "" {
+                info!("get <- {} {}", idx, reply.value);
                 Some(reply.value)
             } else {
                 debug!("->{} {}", idx, reply.err);
@@ -98,25 +104,33 @@ impl Clerk {
     // you can send an RPC with code like this:
     // let reply = self.servers[i].put_append(args).unwrap();
     fn put_append(&self, op: Op) {
-        let arg = match op {
-            Op::Put(key, value) => PutAppendRequest {
-                key,
-                value,
-                op: crate::proto::kvraftpb::Op::Put as i32,
-            },
-            Op::Append(key, value) => PutAppendRequest {
-                key,
-                value,
-                op: crate::proto::kvraftpb::Op::Append as i32,
-            },
+        let arg = {
+            let client_id = self.client_id;
+            let request_id = self.request_seq.fetch_add(1, Ordering::SeqCst);
+            match op {
+                Op::Put(key, value) => PutAppendRequest {
+                    key,
+                    value,
+                    client_id,
+                    request_id,
+                    op: crate::proto::kvraftpb::Op::Put as i32,
+                },
+                Op::Append(key, value) => PutAppendRequest {
+                    key,
+                    value,
+                    client_id,
+                    request_id,
+                    op: crate::proto::kvraftpb::Op::Append as i32,
+                },
+            }
         };
         let leader = self.leader.load(Ordering::SeqCst);
-        if let Some(_) = self.put_append_to_server(leader, &arg) {
+        if self.put_append_to_server(leader, &arg).is_some() {
             return;
         }
         loop {
             for idx in 0..self.servers.len() {
-                if let Some(_) = self.put_append_to_server(idx, &arg) {
+                if self.put_append_to_server(idx, &arg).is_some() {
                     self.leader.store(idx, Ordering::SeqCst);
                     return;
                 }

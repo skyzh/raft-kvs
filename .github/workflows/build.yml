@@ -23,14 +23,18 @@ jobs:
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2a
-        run: LOG_LEVEL=raft=warn make test_2a
+        run: LOG_LEVEL=raft=warn make ci_test_2a
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2b
-        run: LOG_LEVEL=raft=warn make test_2b
+        run: LOG_LEVEL=raft=warn make ci_test_2b
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2c
-        run: LOG_LEVEL=raft=warn make test_2c
+        run: LOG_LEVEL=raft=warn make ci_test_2c
+        env:
+          CARGO_FLAG: ${{ matrix.cargo_flag }}
+      - name: test 3a
+        run: LOG_LEVEL=raft=warn make ci_test_3a
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}

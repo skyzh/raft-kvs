@@ -2,12 +2,12 @@ use futures::sync::mpsc::{unbounded, UnboundedReceiver};
 
 use labrpc::RpcFuture;
 
-use crate::proto::kvraftpb::*;
+use crate::proto::kvraftpb::{kv_log::*, *};
 use crate::raft;
 use crate::raft::ApplyMsg;
 use futures::sync::oneshot;
 use futures::{Future, Stream};
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, Mutex};
 
 pub struct KvServer {
@@ -15,7 +15,7 @@ pub struct KvServer {
     me: usize,
     maxraftstate: Option<usize>,
     apply_ch: Option<UnboundedReceiver<ApplyMsg>>,
-    kvstore: FxHashMap<String, String>,
+    kvstore: FxHashMap<String, (String, FxHashSet<(u64, u64)>)>,
     apply_queue: FxHashMap<u64, (oneshot::Sender<Option<String>>, KvLog)>,
 }
 
@@ -79,21 +79,30 @@ impl KvServer {
 
     fn apply_log(&mut self, log: KvLog) -> Option<String> {
         if log.op == LogOp::Put as i32 {
-            self.kvstore.insert(log.key, log.value);
+            self.kvstore
+                .insert(log.key, (log.value, FxHashSet::default()));
             None
         } else if log.op == LogOp::Append as i32 {
-            let value = self.kvstore.remove(&log.key).unwrap_or("".to_string());
-            let value = value + &log.value;
-            self.kvstore.insert(log.key, value);
+            let (mut value, mut hashset) = self
+                .kvstore
+                .remove(&log.key)
+                .unwrap_or((String::new(), FxHashSet::default()));
+            if !hashset.contains(&(log.client_id, log.request_id)) {
+                value += &log.value;
+                hashset.insert((log.client_id, log.request_id));
+            }
+            let key = log.key.clone();
+            self.kvstore.insert(log.key, (value, hashset));
+            trace!("@{} log={:?} kv={:?}", self.me, key, self.kvstore);
             None
         } else {
-            trace!("@{} log={:?} kv={:?}", self.me, log, self.kvstore);
-            Some(
-                self.kvstore
-                    .get(&log.key)
-                    .unwrap_or(&"".to_string())
-                    .to_owned(),
-            )
+            Some(match self.kvstore.get(&log.key) {
+                Some((v, _)) => {
+                    info!("@{} {}={}", self.me, log.key, v);
+                    v.clone()
+                }
+                None => String::new(),
+            })
         }
     }
 }
@@ -120,12 +129,16 @@ impl Node {
                 .for_each(|x| {
                     {
                         let mut server = server.lock().unwrap();
+                        // apply log first
+                        debug!("@{} applying {}", server.me, x.command_index);
+                        let log_to_apply = labcodec::decode(&x.command).unwrap();
+                        let value = server.apply_log(log_to_apply).unwrap_or_default();
+                        // then check if there's pending request
                         if let Some((tx, log_sent)) = server.apply_queue.remove(&x.command_index) {
                             let mut log_sent_encoded = vec![];
                             labcodec::encode(&log_sent, &mut log_sent_encoded).unwrap();
                             if x.command == log_sent_encoded {
-                                debug!("@{} applying {}", server.me, x.command_index);
-                                let value = server.apply_log(log_sent).unwrap_or("".to_string());
+                                debug!("@{} responding {}", server.me, x.command_index);
                                 tx.send(Some(value)).unwrap();
                             } else {
                                 tx.send(None).unwrap();
@@ -185,12 +198,14 @@ impl KvService for Node {
                 trace!("@{} get {:?}", server.me, arg);
                 server.op(KvLog {
                     key: arg.key,
-                    value: "".to_string(),
+                    value: String::new(),
                     op: LogOp::Get as i32,
+                    client_id: 0,
+                    request_id: 0,
                 })
             }
             .map(|value| GetReply {
-                err: "".to_string(),
+                err: String::new(),
                 value,
                 wrong_leader: false,
             })
@@ -199,13 +214,13 @@ impl KvService for Node {
                 if err_str == "not leader" {
                     futures::future::ok(GetReply {
                         err: err_str,
-                        value: "".to_string(),
+                        value: String::new(),
                         wrong_leader: true,
                     })
                 } else {
                     futures::future::ok(GetReply {
-                        err: err.to_string(),
-                        value: "".to_string(),
+                        err,
+                        value: String::new(),
                         wrong_leader: false,
                     })
                 }
@@ -223,10 +238,12 @@ impl KvService for Node {
                     key: arg.key,
                     value: arg.value,
                     op: Self::op_to_log_op(arg.op),
+                    client_id: arg.client_id,
+                    request_id: arg.request_id,
                 })
             }
             .map(|_| PutAppendReply {
-                err: "".to_string(),
+                err: String::new(),
                 wrong_leader: false,
             })
             .or_else(|err| {
@@ -238,7 +255,7 @@ impl KvService for Node {
                     })
                 } else {
                     futures::future::ok(PutAppendReply {
-                        err: err.to_string(),
+                        err,
                         wrong_leader: false,
                     })
                 }

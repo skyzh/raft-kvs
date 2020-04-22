@@ -14,7 +14,9 @@ message PutAppendRequest {
     string value = 2;
     // "Put" or "Append"
     Op op = 3;
-    // You'll have to add definitions here.
+
+    uint64 clientId = 4;
+    uint64 requestId = 5;
 }
 
 message PutAppendReply {
@@ -33,13 +35,15 @@ message GetReply {
     string value = 3;
 }
 
-enum LogOp {
-    Get = 0;
-    PutAppend = 1;
-}
-
 message KvLog {
+    enum LogOp {
+        Get = 0;
+        Put = 1;
+        Append = 2;
+    }
     LogOp op = 1;
     string key = 2;
     string value = 3;
+    uint64 clientId = 4;
+    uint64 requestId = 5;
 }
