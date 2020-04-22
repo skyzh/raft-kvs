@@ -30,8 +30,8 @@ build:
 cargo_test_%: check
 	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG) -p raft -- --nocapture --test $*
 
-ci_cargo_test_%:
-    RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG) -p raft -- --nocapture --test $*
+ci_test_%:
+	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG) -p raft -- --nocapture --test $*
 
 test_others: check
 	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p labrpc -p labcodec -- --nocapture
