@@ -210,7 +210,7 @@ pub struct Raft {
     cache_next_update: u128,
 
     /// apply channel
-    apply_ch: Option<UnboundedSender<ApplyMsg>>,
+    apply_ch: UnboundedSender<ApplyMsg>,
 
     /// last known leader
     lst_leader: Option<u64>,
@@ -258,7 +258,7 @@ impl Raft {
             rpc_channel_tx: None,
             next_heartbeat: Vec::new(),
             cache_next_update: 0,
-            apply_ch: Some(apply_ch),
+            apply_ch: apply_ch,
             lst_leader: None,
         };
 
@@ -461,15 +461,13 @@ impl Raft {
     /// apply log message
     fn apply_message(&mut self) {
         for idx in self.last_applied + 1..=self.commit_index {
-            if let Some(apply_ch) = self.apply_ch.as_ref() {
-                apply_ch
-                    .unbounded_send(ApplyMsg {
-                        command_valid: true,
-                        command_index: idx,
-                        command: self.persist_state.log()[idx as usize - 1].1.clone(),
-                    })
-                    .unwrap();
-            }
+            self.apply_ch
+                .unbounded_send(ApplyMsg {
+                    command_valid: true,
+                    command_index: idx,
+                    command: self.persist_state.log()[idx as usize - 1].1.clone(),
+                })
+                .unwrap();
         }
     }
 
@@ -826,7 +824,7 @@ impl Raft {
 #[derive(Clone)]
 pub struct Node {
     /// Raft instance
-    raft: Arc<Mutex<Raft>>,
+    raft: Arc<Mutex<Option<Raft>>>,
     cancel: Arc<AtomicBool>,
     ticker: Arc<Option<JoinHandle<()>>>,
     poll_ticker: Arc<Option<JoinHandle<()>>>,
@@ -835,12 +833,13 @@ pub struct Node {
 
 impl Node {
     /// Create a new raft service.
-    pub fn new(raft: Raft) -> Node {
+    pub fn new(mut raft: Raft) -> Node {
         let me = raft.me;
-        let raft = Arc::new(Mutex::new(raft));
-        let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = channel();
-        raft.lock().unwrap().rpc_channel_tx = Some(tx);
+        raft.rpc_channel_tx = Some(tx);
+        let raft = Arc::new(Mutex::new(Some(raft)));
+        let cancel = Arc::new(AtomicBool::new(false));
+
         let mut node = Node {
             raft,
             cancel,
@@ -855,7 +854,12 @@ impl Node {
             while !cancel.load(SeqCst) {
                 {
                     let mut raft = raft.lock().unwrap();
-                    raft.tick();
+                    let raft = raft.as_mut();
+                    if let Some(raft) = raft {
+                        raft.tick();
+                    } else {
+                        break;
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -868,7 +872,12 @@ impl Node {
             for (id, from, event) in rx.iter() {
                 {
                     let mut raft = raft.lock().unwrap();
-                    raft.on_event(id, from, event);
+                    let raft = raft.as_mut();
+                    if let Some(raft) = raft {
+                        raft.on_event(id, from, event);
+                    } else {
+                        break;
+                    }
                 }
                 std::thread::yield_now();
             }
@@ -893,7 +902,7 @@ impl Node {
     where
         M: labcodec::Message,
     {
-        self.raft.lock().unwrap().start(command)
+        self.raft.lock().unwrap().as_mut().unwrap().start(command)
     }
 
     /// The current term of this peer.
@@ -908,7 +917,8 @@ impl Node {
 
     /// The current state of this peer.
     pub fn get_state(&self) -> State {
-        let raft = self.raft.lock().unwrap();
+        let mut raft_gurad = self.raft.lock().unwrap();
+        let raft = raft_gurad.as_mut().unwrap();
         State {
             is_leader: raft.role == Role::Leader,
             term: raft.persist_state.term(),
@@ -924,14 +934,12 @@ impl Node {
     /// a VIRTUAL crash in tester, so take care of background
     /// threads you generated with this Raft Node.
     pub fn kill(&self) {
-        let mut raft = self.raft.lock().unwrap();
-        raft.apply_ch = None;
-        raft.rpc_channel_tx = None;
+        *self.raft.lock().unwrap() = None;
         self.cancel.store(true, SeqCst);
     }
 
     pub fn believed_leader(&self) -> Option<u64> {
-        self.raft.lock().unwrap().believed_leader()
+        self.raft.lock().unwrap().as_mut().unwrap().believed_leader()
     }
 }
 
@@ -940,7 +948,7 @@ impl RaftService for Node {
         let raft = self.raft.clone();
         Box::new(self.executor.spawn_fn(move || {
             let mut raft = raft.lock().unwrap();
-            raft.on_rpc_request_vote(args)
+            raft.as_mut().unwrap().on_rpc_request_vote(args)
         }))
     }
 
@@ -948,7 +956,7 @@ impl RaftService for Node {
         let raft = self.raft.clone();
         Box::new(self.executor.spawn_fn(move || {
             let mut raft = raft.lock().unwrap();
-            raft.on_rpc_append_entries(args)
+            raft.as_mut().unwrap().on_rpc_append_entries(args)
         }))
     }
 }

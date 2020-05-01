@@ -25,7 +25,7 @@ test_3a: cargo_test_3a
 test_3b: cargo_test_3b
 
 build:
-	cargo build $(CARGO_FLAG)
+	cargo build $(CARGO_FLAG) --all-targets
 
 cargo_test_%: check
 	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG) -p raft -- --nocapture --test $*
@@ -40,7 +40,7 @@ test_percolator: check
 	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p percolator -- --nocapture
 
 test_alex: FORCE
-	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p raft --lib tests::test_persist_partition_unreliable_linearizable_3a -- --nocapture
+	RUST_LOG=${LOG_LEVEL} cargo test $(CARGO_FLAG)  -p raft --lib tests::test_reliable_churn_2c -- --nocapture
 
 .PHONY: FORCE
 FORCE:
