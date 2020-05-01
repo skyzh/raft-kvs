@@ -23,7 +23,7 @@ jobs:
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 3a
-        run: LOG_LEVEL=raft=debug make ci_test_3a
+        run: LOG_LEVEL=raft=info make ci_test_3a
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2a
