@@ -469,6 +469,7 @@ impl Raft {
                 })
                 .unwrap();
         }
+        self.last_applied = self.commit_index;
     }
 
     /// send heartbeats to followers
