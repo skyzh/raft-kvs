@@ -22,10 +22,6 @@ jobs:
         run: make build
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
-      - name: test alex
-        run: LOG_LEVEL=raft=debug make test_alex
-        env:
-          CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2a
         run: LOG_LEVEL=raft=warn make ci_test_2a
         env:
@@ -36,9 +32,5 @@ jobs:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
       - name: test 2c
         run: LOG_LEVEL=raft=warn make ci_test_2c
-        env:
-          CARGO_FLAG: ${{ matrix.cargo_flag }}
-      - name: test 3a
-        run: LOG_LEVEL=raft=warn make ci_test_3a
         env:
           CARGO_FLAG: ${{ matrix.cargo_flag }}
