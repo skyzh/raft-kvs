@@ -9,7 +9,7 @@ use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
 use futures::sync::mpsc::UnboundedSender;
-use futures::Future;
+use futures::{Future, Sink};
 use fxhash::{FxHashMap, FxHashSet};
 use labrpc::RpcFuture;
 use rand::Rng;
@@ -934,7 +934,8 @@ impl Node {
     /// a VIRTUAL crash in tester, so take care of background
     /// threads you generated with this Raft Node.
     pub fn kill(&self) {
-        *self.raft.lock().unwrap() = None;
+        let mut raft = self.raft.lock().unwrap();
+        *raft = None;
         self.cancel.store(true, SeqCst);
     }
 

@@ -5,6 +5,7 @@ use labrpc::RpcFuture;
 use crate::proto::kvraftpb::{kv_log::*, *};
 use crate::raft;
 use crate::raft::ApplyMsg;
+use futures::future::Executor;
 use futures::sync::oneshot;
 use futures::{Future, Stream};
 use fxhash::{FxHashMap, FxHashSet};
@@ -124,10 +125,9 @@ impl Node {
             executor: futures_cpupool::CpuPool::new_num_cpus(),
         };
 
-        std::thread::spawn(move || {
-            info!("@{} start applying", me);
-            apply_ch
-                .for_each(|x| {
+        let apply = apply_ch
+            .for_each(move |x| {
+                let result = {
                     let mut server_lock = server.lock().unwrap();
                     if let Some(server) = server_lock.as_mut() {
                         // apply log first
@@ -149,11 +149,12 @@ impl Node {
                     } else {
                         Err(())
                     }
-                })
-                .wait()
-                .ok();
-            info!("@{} stop apply", me);
-        });
+                };
+                result
+            })
+            .map_err(move |e| info!("@{} stop applying", me));
+
+        node.executor.spawn(apply).forget();
 
         node
     }
