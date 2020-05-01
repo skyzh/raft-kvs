@@ -127,30 +127,27 @@ impl Node {
 
         let apply = apply_ch
             .for_each(move |x| {
-                let result = {
-                    let mut server_lock = server.lock().unwrap();
-                    if let Some(server) = server_lock.as_mut() {
-                        // apply log first
-                        debug!("@{} applying {}", server.me, x.command_index);
-                        let log_to_apply = labcodec::decode(&x.command).unwrap();
-                        let value = server.apply_log(log_to_apply).unwrap_or_default();
-                        // then check if there's pending request
-                        if let Some((tx, log_sent)) = server.apply_queue.remove(&x.command_index) {
-                            let mut log_sent_encoded = vec![];
-                            labcodec::encode(&log_sent, &mut log_sent_encoded).unwrap();
-                            if server.rf.is_leader() && x.command == log_sent_encoded {
-                                debug!("@{} responding {}", server.me, x.command_index);
-                                tx.send(Some(value)).ok();
-                            } else {
-                                tx.send(None).ok();
-                            }
+                let mut server_lock = server.lock().unwrap();
+                if let Some(server) = server_lock.as_mut() {
+                    // apply log first
+                    debug!("@{} applying {}", server.me, x.command_index);
+                    let log_to_apply = labcodec::decode(&x.command).unwrap();
+                    let value = server.apply_log(log_to_apply).unwrap_or_default();
+                    // then check if there's pending request
+                    if let Some((tx, log_sent)) = server.apply_queue.remove(&x.command_index) {
+                        let mut log_sent_encoded = vec![];
+                        labcodec::encode(&log_sent, &mut log_sent_encoded).unwrap();
+                        if server.rf.is_leader() && x.command == log_sent_encoded {
+                            debug!("@{} responding {}", server.me, x.command_index);
+                            tx.send(Some(value)).ok();
+                        } else {
+                            tx.send(None).ok();
                         }
-                        Ok(())
-                    } else {
-                        Err(())
                     }
-                };
-                result
+                    Ok(())
+                } else {
+                    Err(())
+                }
             })
             .map_err(move |e| info!("@{} stop applying", me));
 
