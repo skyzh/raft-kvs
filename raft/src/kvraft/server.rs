@@ -110,7 +110,7 @@ impl KvServer {
 
 #[derive(Clone)]
 pub struct Node {
-    server: Arc<Mutex<KvServer>>,
+    server: Arc<Mutex<Option<KvServer>>>,
     executor: futures_cpupool::CpuPool,
 }
 
@@ -118,7 +118,7 @@ impl Node {
     pub fn new(mut kv: KvServer) -> Node {
         let apply_ch = kv.get_apply_channel().unwrap();
         let me = kv.me;
-        let server = Arc::new(Mutex::new(kv));
+        let server = Arc::new(Mutex::new(Some(kv)));
         let node = Self {
             server: server.clone(),
             executor: futures_cpupool::CpuPool::new_num_cpus(),
@@ -128,8 +128,8 @@ impl Node {
             info!("@{} start applying", me);
             apply_ch
                 .for_each(|x| {
-                    {
-                        let mut server = server.lock().unwrap();
+                    let mut server_lock = server.lock().unwrap();
+                    if let Some(server) = server_lock.as_mut() {
                         // apply log first
                         debug!("@{} applying {}", server.me, x.command_index);
                         let log_to_apply = labcodec::decode(&x.command).unwrap();
@@ -145,9 +145,10 @@ impl Node {
                                 tx.send(None).ok();
                             }
                         }
+                        Ok(())
+                    } else {
+                        Err(())
                     }
-                    std::thread::yield_now();
-                    Ok(())
                 })
                 .wait()
                 .ok();
@@ -162,7 +163,9 @@ impl Node {
     /// in kill(), but it might be convenient to (for example)
     /// turn off debug output from this instance.
     pub fn kill(&self) {
-        self.server.lock().unwrap().rf.kill();
+        let mut server = self.server.lock().unwrap();
+        server.as_mut().unwrap().rf.kill();
+        *server = None;
     }
 
     /// The current term of this peer.
@@ -176,7 +179,8 @@ impl Node {
     }
 
     pub fn get_state(&self) -> raft::State {
-        self.server.lock().unwrap().rf.get_state()
+        let mut server = self.server.lock().unwrap();
+        server.as_mut().unwrap().rf.get_state()
     }
 
     fn op_to_log_op(x: i32) -> i32 {
@@ -196,14 +200,18 @@ impl KvService for Node {
         Box::new(self.executor.spawn_fn(move || {
             {
                 let mut server = server.lock().unwrap();
-                trace!("@{} get {:?}", server.me, arg);
-                server.op(KvLog {
-                    key: arg.key,
-                    value: String::new(),
-                    op: LogOp::Get as i32,
-                    client_id: 0,
-                    request_id: 0,
-                })
+                if let Some(server) = server.as_mut() {
+                    trace!("@{} get {:?}", server.me, arg);
+                    server.op(KvLog {
+                        key: arg.key,
+                        value: String::new(),
+                        op: LogOp::Get as i32,
+                        client_id: 0,
+                        request_id: 0,
+                    })
+                } else {
+                    Box::new(futures::future::err("already killed".to_string()))
+                }
             }
             .map(|value| GetReply {
                 err: String::new(),
@@ -234,14 +242,18 @@ impl KvService for Node {
         Box::new(self.executor.spawn_fn(move || {
             {
                 let mut server = server.lock().unwrap();
-                trace!("@{} put {:?}", server.me, arg);
-                server.op(KvLog {
-                    key: arg.key,
-                    value: arg.value,
-                    op: Self::op_to_log_op(arg.op),
-                    client_id: arg.client_id,
-                    request_id: arg.request_id,
-                })
+                if let Some(server) = server.as_mut() {
+                    trace!("@{} put {:?}", server.me, arg);
+                    server.op(KvLog {
+                        key: arg.key,
+                        value: arg.value,
+                        op: Self::op_to_log_op(arg.op),
+                        client_id: arg.client_id,
+                        request_id: arg.request_id,
+                    })
+                } else {
+                    Box::new(futures::future::err("already killed".to_string()))
+                }
             }
             .map(|_| PutAppendReply {
                 err: String::new(),
