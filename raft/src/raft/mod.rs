@@ -953,7 +953,12 @@ impl RaftService for Node {
         let raft = self.raft.clone();
         Box::new(self.executor.spawn_fn(move || {
             let mut raft = raft.lock().unwrap();
-            raft.as_mut().unwrap().on_rpc_request_vote(args)
+            let raft_mut = raft.as_mut();
+            if let Some(raft) = raft_mut {
+                raft.on_rpc_request_vote(args)
+            } else {
+                Box::new(futures::future::err(labrpc::Error::Stopped))
+            }
         }))
     }
 
@@ -961,7 +966,12 @@ impl RaftService for Node {
         let raft = self.raft.clone();
         Box::new(self.executor.spawn_fn(move || {
             let mut raft = raft.lock().unwrap();
-            raft.as_mut().unwrap().on_rpc_append_entries(args)
+            let raft_mut = raft.as_mut();
+            if let Some(raft) = raft_mut {
+                raft.on_rpc_append_entries(args)
+            } else {
+                Box::new(futures::future::err(labrpc::Error::Stopped))
+            }
         }))
     }
 }
