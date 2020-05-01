@@ -854,8 +854,7 @@ impl Node {
             while !cancel.load(SeqCst) {
                 {
                     let mut raft = raft.lock().unwrap();
-                    let raft = raft.as_mut();
-                    if let Some(raft) = raft {
+                    if let Some(raft) = raft.as_mut() {
                         raft.tick();
                     } else {
                         break;
@@ -872,8 +871,7 @@ impl Node {
             for (id, from, event) in rx.iter() {
                 {
                     let mut raft = raft.lock().unwrap();
-                    let raft = raft.as_mut();
-                    if let Some(raft) = raft {
+                    if let Some(raft) = raft.as_mut() {
                         raft.on_event(id, from, event);
                     } else {
                         break;
@@ -902,7 +900,11 @@ impl Node {
     where
         M: labcodec::Message,
     {
-        self.raft.lock().unwrap().as_mut().unwrap().start(command)
+        if let Some(raft) = self.raft.lock().unwrap().as_mut() {
+            raft.start(command)
+        } else {
+            Err(Error::NotLeader)
+        }
     }
 
     /// The current term of this peer.
@@ -917,11 +919,17 @@ impl Node {
 
     /// The current state of this peer.
     pub fn get_state(&self) -> State {
-        let mut raft_gurad = self.raft.lock().unwrap();
-        let raft = raft_gurad.as_mut().unwrap();
-        State {
-            is_leader: raft.role == Role::Leader,
-            term: raft.persist_state.term(),
+        let mut raft = self.raft.lock().unwrap();
+        if let Some(raft) = raft.as_mut() {
+            State {
+                is_leader: raft.role == Role::Leader,
+                term: raft.persist_state.term(),
+            }
+        } else {
+            State {
+                is_leader: false,
+                term: 0,
+            }
         }
     }
 
@@ -934,9 +942,9 @@ impl Node {
     /// a VIRTUAL crash in tester, so take care of background
     /// threads you generated with this Raft Node.
     pub fn kill(&self) {
+        self.cancel.store(true, SeqCst);
         let mut raft = self.raft.lock().unwrap();
         *raft = None;
-        self.cancel.store(true, SeqCst);
     }
 
     pub fn believed_leader(&self) -> Option<u64> {
@@ -954,8 +962,7 @@ impl RaftService for Node {
         let raft = self.raft.clone();
         Box::new(self.executor.spawn_fn(move || {
             let mut raft = raft.lock().unwrap();
-            let raft_mut = raft.as_mut();
-            if let Some(raft) = raft_mut {
+            if let Some(raft) = raft.as_mut() {
                 raft.on_rpc_request_vote(args)
             } else {
                 Box::new(futures::future::err(labrpc::Error::Stopped))
@@ -967,8 +974,7 @@ impl RaftService for Node {
         let raft = self.raft.clone();
         Box::new(self.executor.spawn_fn(move || {
             let mut raft = raft.lock().unwrap();
-            let raft_mut = raft.as_mut();
-            if let Some(raft) = raft_mut {
+            if let Some(raft) = raft.as_mut() {
                 raft.on_rpc_append_entries(args)
             } else {
                 Box::new(futures::future::err(labrpc::Error::Stopped))

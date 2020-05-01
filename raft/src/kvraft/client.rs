@@ -94,7 +94,7 @@ impl Clerk {
                 }
                 std::thread::yield_now();
             }
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 
@@ -135,7 +135,7 @@ impl Clerk {
                 }
                 std::thread::yield_now();
             }
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 
