@@ -44,7 +44,7 @@ impl Clerk {
         if let Ok(reply) = server
             .get(arg)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            .timeout(Duration::from_secs(1))
+            .timeout(Duration::from_secs(3))
             .wait()
         {
             if !reply.wrong_leader && reply.err == "" {
@@ -65,7 +65,7 @@ impl Clerk {
         if let Ok(reply) = server
             .put_append(arg)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            .timeout(Duration::from_secs(1))
+            .timeout(Duration::from_secs(3))
             .wait()
         {
             if !reply.wrong_leader && reply.err == "" {
@@ -94,6 +94,7 @@ impl Clerk {
                 }
                 std::thread::yield_now();
             }
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
@@ -134,6 +135,7 @@ impl Clerk {
                 }
                 std::thread::yield_now();
             }
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
