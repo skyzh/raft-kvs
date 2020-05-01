@@ -258,7 +258,7 @@ impl Raft {
             rpc_channel_tx: None,
             next_heartbeat: Vec::new(),
             cache_next_update: 0,
-            apply_ch: apply_ch,
+            apply_ch,
             lst_leader: None,
         };
 
@@ -939,7 +939,12 @@ impl Node {
     }
 
     pub fn believed_leader(&self) -> Option<u64> {
-        self.raft.lock().unwrap().as_mut().unwrap().believed_leader()
+        self.raft
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .believed_leader()
     }
 }
 
