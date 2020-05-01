@@ -214,6 +214,9 @@ pub struct Raft {
 
     /// last known leader
     lst_leader: Option<u64>,
+
+    /// apply message on tick, so that not blocking RPC
+    apply_message_flag: bool,
 }
 
 impl Raft {
@@ -260,6 +263,7 @@ impl Raft {
             cache_next_update: 0,
             apply_ch,
             lst_leader: None,
+            apply_message_flag: false,
         };
 
         // initialize from state persisted before a crash
@@ -454,7 +458,7 @@ impl Raft {
                 "@{} leader commit {:?}=>{}",
                 self.me, self.match_index, self.commit_index
             );
-            self.apply_message();
+            self.apply_message_flag = true;
         }
     }
 
@@ -576,6 +580,11 @@ impl Raft {
         }
 
         self.update_rpc_cache();
+
+        if self.apply_message_flag {
+            self.apply_message_flag = false;
+            self.apply_message();
+        }
     }
 
     /// update RPC request-response pairing cache
@@ -701,7 +710,7 @@ impl Raft {
                     self.debug_log();
                     if args.leader_commit > self.commit_index {
                         self.commit_index = self.last_log_index().min(args.leader_commit);
-                        self.apply_message();
+                        self.apply_message_flag = true;
                         debug!("@{} leader commit: {}", self.me, self.commit_index);
                     }
                 }

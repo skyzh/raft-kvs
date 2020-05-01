@@ -90,11 +90,12 @@ impl Clerk {
             for idx in 0..self.servers.len() {
                 if let Some(x) = self.get_from_server(idx, &arg) {
                     self.leader.store(idx, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(10));
                     return x;
                 }
                 std::thread::yield_now();
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(300));
         }
     }
 
@@ -131,11 +132,12 @@ impl Clerk {
             for idx in 0..self.servers.len() {
                 if self.put_append_to_server(idx, &arg).is_some() {
                     self.leader.store(idx, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(10));
                     return;
                 }
                 std::thread::yield_now();
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(300));
         }
     }
 

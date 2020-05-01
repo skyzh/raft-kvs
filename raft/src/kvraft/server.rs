@@ -130,8 +130,11 @@ impl Node {
                 let mut server_lock = server.lock().unwrap();
                 if let Some(server) = server_lock.as_mut() {
                     // apply log first
-                    debug!("@{} applying {}", server.me, x.command_index);
-                    let log_to_apply = labcodec::decode(&x.command).unwrap();
+                    let log_to_apply: KvLog = labcodec::decode(&x.command).unwrap();
+                    debug!(
+                        "@{} applying {} op={}",
+                        server.me, x.command_index, log_to_apply.op
+                    );
                     let value = server.apply_log(log_to_apply).unwrap_or_default();
                     // then check if there's pending request
                     if let Some((tx, log_sent)) = server.apply_queue.remove(&x.command_index) {
